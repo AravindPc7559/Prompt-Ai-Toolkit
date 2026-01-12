@@ -1,0 +1,29 @@
+.form-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  color: #2d3748;
+  background: white;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+}
+
+.form-textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.form-textarea:disabled {
+  background: #f7fafc;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-textarea::placeholder {
+  color: #a0aec0;
+}

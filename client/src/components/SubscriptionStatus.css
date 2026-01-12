@@ -1,0 +1,72 @@
+.subscription-status {
+  display: flex;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.subscription-status.subscribed {
+  background: #d1fae5;
+  border: 1px solid #a7f3d0;
+}
+
+.subscription-status.trial {
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  flex-direction: column;
+}
+
+.status-icon {
+  font-size: 2rem;
+  flex-shrink: 0;
+}
+
+.status-content {
+  flex: 1;
+}
+
+.status-content h3 {
+  margin: 0 0 8px 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #1a202c;
+}
+
+.status-content p {
+  margin: 4px 0;
+  font-size: 0.875rem;
+  color: #4a5568;
+}
+
+.expiry-date {
+  font-weight: 500;
+  color: #065f46 !important;
+}
+
+.trial-count {
+  font-size: 1rem !important;
+  font-weight: 600;
+  color: #92400e !important;
+}
+
+.trial-progress {
+  width: 100%;
+  height: 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+.trial-progress-bar {
+  height: 100%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  transition: width 0.3s ease;
+}
+
+.trial-exhausted {
+  color: #991b1b !important;
+  font-weight: 500;
+  margin-top: 8px !important;
+}

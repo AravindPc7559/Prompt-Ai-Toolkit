@@ -1,0 +1,36 @@
+.feature-card {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 8px;
+  background: #f7fafc;
+  transition: all 0.2s ease;
+}
+
+.feature-card:hover {
+  background: #edf2f7;
+  transform: translateY(-2px);
+}
+
+.feature-icon {
+  font-size: 2rem;
+  flex-shrink: 0;
+}
+
+.feature-content {
+  flex: 1;
+}
+
+.feature-content h3 {
+  margin: 0 0 8px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1a202c;
+}
+
+.feature-content p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #718096;
+  line-height: 1.5;
+}

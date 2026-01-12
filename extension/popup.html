@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prompt AI Toolkit</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="icons/pnglogo.png" alt="Prompt AI Toolkit" class="logo-img" />
+      <h1>Prompt AI Toolkit</h1>
+      <p class="subtitle">AI-powered text enhancement toolkit</p>
+    </div>
+
+    <div class="content">
+      <div class="input-section">
+        <label for="prompt-input">Enter or paste your prompt:</label>
+        <textarea 
+          id="prompt-input" 
+          placeholder="Type or paste your prompt here..."
+          rows="6"
+        ></textarea>
+      </div>
+
+      <div class="format-section">
+        <label for="format-select">Output Format:</label>
+        <select id="format-select">
+          <option value="default">Default (Structured Text)</option>
+          <option value="rtf">RTF (Rich Text Format)</option>
+          <option value="markdown">Markdown</option>
+          <option value="html">HTML</option>
+        </select>
+      </div>
+
+      <div class="button-section">
+        <button id="rewrite-btn" class="btn-primary">
+          <span class="btn-text">Rewrite Prompt</span>
+          <span class="btn-loader" style="display: none;">⏳ Rewriting...</span>
+        </button>
+        <button id="get-selected-btn" class="btn-secondary">
+          📋 Get Selected Text
+        </button>
+      </div>
+
+      <div id="result-section" class="result-section" style="display: none;">
+        <div class="result-header">
+          <h3>Rewritten Prompt:</h3>
+          <button id="copy-btn" class="btn-copy">📋 Copy</button>
+        </div>
+        <div id="result-content" class="result-content"></div>
+        <div class="action-buttons">
+          <button id="replace-btn" class="btn-success">✅ Replace on Page</button>
+          <button id="use-btn" class="btn-primary">Use This Prompt</button>
+        </div>
+      </div>
+
+      <div id="error-section" class="error-section" style="display: none;">
+        <p id="error-message"></p>
+      </div>
+
+      <div class="settings-section">
+        <label for="server-url">Server URL:</label>
+        <input 
+          type="text" 
+          id="server-url" 
+          placeholder="http://localhost:3000"
+          value="http://localhost:3000"
+        >
+        <button id="save-settings-btn" class="btn-secondary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

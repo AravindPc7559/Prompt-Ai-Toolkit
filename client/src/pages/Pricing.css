@@ -1,0 +1,355 @@
+.pricing-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+.pricing-nav {
+  background: white;
+  padding: 20px 40px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  gap: 20px;
+  flex-wrap: nowrap;
+}
+
+.pricing-nav .nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pricing-nav .nav-logo {
+  height: 40px;
+  width: auto;
+  object-fit: contain;
+}
+
+.pricing-nav .nav-brand h2 {
+  margin: 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.pricing-nav .nav-links {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.pricing-nav .nav-link {
+  text-decoration: none;
+  color: #4a5568;
+  font-weight: 500;
+  font-size: 1rem;
+  transition: color 0.3s ease;
+}
+
+.pricing-nav .nav-link:hover {
+  color: #667eea;
+}
+
+.pricing-nav .nav-link.active {
+  color: #667eea;
+  font-weight: 600;
+}
+
+.pricing-nav .nav-user {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  visibility: visible;
+  opacity: 1;
+  position: relative;
+  z-index: 101;
+  flex-shrink: 0;
+}
+
+.pricing-nav .user-email {
+  color: #1a202c;
+  font-size: 0.9rem;
+  font-weight: 600;
+  position: relative;
+  z-index: 102;
+  white-space: nowrap;
+}
+
+.pricing-nav .logout-button {
+  background: #f56565;
+  color: #ffffff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.3s ease;
+  position: relative;
+  z-index: 102;
+  white-space: nowrap;
+}
+
+.pricing-nav .logout-button:hover {
+  background: #e53e3e;
+}
+
+.pricing-content {
+  flex: 1;
+  padding: 60px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pricing-header {
+  text-align: center;
+  margin-bottom: 60px;
+}
+
+.pricing-header h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.pricing-header p {
+  font-size: 1.25rem;
+  color: #718096;
+}
+
+.pricing-card {
+  background: white;
+  border-radius: 24px;
+  padding: 48px;
+  max-width: 450px;
+  width: 100%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  position: relative;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.pricing-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.35);
+}
+
+.pricing-badge {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+  padding: 8px 24px;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+}
+
+.pricing-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1a202c;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.pricing-price {
+  text-align: center;
+  margin-bottom: 40px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+}
+
+.pricing-price .currency {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #4a5568;
+}
+
+.pricing-price .amount {
+  font-size: 4rem;
+  font-weight: 700;
+  color: #1a202c;
+  line-height: 1;
+}
+
+.pricing-price .period {
+  font-size: 1.25rem;
+  color: #718096;
+  font-weight: 500;
+}
+
+.pricing-features {
+  margin-bottom: 40px;
+}
+
+.feature-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 1rem;
+  color: #2d3748;
+}
+
+.feature-item:last-child {
+  border-bottom: none;
+}
+
+.feature-icon {
+  width: 24px;
+  height: 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.pricing-button {
+  width: 100%;
+  padding: 16px 32px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.pricing-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+}
+
+.pricing-button:active {
+  transform: translateY(0);
+}
+
+.pricing-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.pricing-error {
+  margin-top: 10px;
+  padding: 12px 16px;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  border: 1px solid #fecaca;
+}
+
+.pricing-footer {
+  margin-top: 40px;
+  text-align: center;
+  color: #718096;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 768px) {
+  .pricing-nav {
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px 20px;
+  }
+
+  .pricing-nav .nav-brand h2 {
+    font-size: 1.25rem;
+  }
+
+  .pricing-nav .nav-logo {
+    height: 32px;
+  }
+
+  .pricing-nav .nav-links {
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .pricing-nav .nav-link {
+    font-size: 0.875rem;
+    padding: 6px 12px;
+  }
+
+  .pricing-nav .nav-user {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    visibility: visible;
+    opacity: 1;
+    display: flex;
+  }
+
+  .pricing-nav .user-email {
+    color: #1a202c;
+    font-weight: 600;
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .pricing-nav .logout-button {
+    visibility: visible;
+    opacity: 1;
+    display: block;
+  }
+
+  .pricing-content {
+    padding: 20px 16px;
+  }
+
+  .pricing-header h1 {
+    font-size: 2rem;
+  }
+
+  .pricing-card {
+    padding: 24px 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  .pricing-header h1 {
+    font-size: 2rem;
+  }
+
+  .pricing-card {
+    padding: 32px 24px;
+  }
+
+  .pricing-price .amount {
+    font-size: 3rem;
+  }
+}

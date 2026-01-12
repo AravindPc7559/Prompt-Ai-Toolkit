@@ -1,0 +1,60 @@
+.page-header {
+  margin-bottom: 40px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.page-header-content {
+  flex: 1;
+}
+
+.page-header-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0 0 12px 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.page-header-subtitle {
+  font-size: 1.125rem;
+  color: #718096;
+  margin: 0;
+}
+
+.page-header-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .page-header-title {
+    font-size: 2rem;
+  }
+
+  .page-header-subtitle {
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-header {
+    margin-bottom: 30px;
+  }
+
+  .page-header-title {
+    font-size: 1.8rem;
+  }
+
+  .page-header-subtitle {
+    font-size: 0.9rem;
+  }
+}
