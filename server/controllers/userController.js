@@ -4,6 +4,7 @@
 import { User } from '../models/User.js';
 import { Payment } from '../models/Payment.js';
 import { canUseService, getUserUsageStats } from '../services/usageService.js';
+import { dataCache, getUsageCacheKey, invalidateUserCache } from '../utils/cache.js';
 
 /**
  * Get current user's usage information
@@ -19,8 +20,16 @@ export const getUserUsage = async (req, res, next) => {
       });
     }
 
-    // Fetch user first (required for everything else)
-    const user = await User.findById(userId).select('-passwordHash');
+    // Check cache first
+    const cacheKey = getUsageCacheKey(userId);
+    const cached = dataCache.get(cacheKey);
+    if (cached) {
+      console.log(`Cache hit for user ${userId}`);
+      return res.json(cached);
+    }
+
+    // Fetch user first (required for everything else) - with projection
+    const user = await User.findById(userId).select('email name freeTrialsUsed isSubscribed subscriptionExpiresAt');
     
     if (!user) {
       return res.status(404).json({
@@ -79,7 +88,7 @@ export const getUserUsage = async (req, res, next) => {
       payments = [];
     }
 
-    res.json({
+    const responseData = {
       success: true,
       user: {
         id: user._id.toString(),
@@ -98,7 +107,12 @@ export const getUserUsage = async (req, res, next) => {
       },
       stats: stats,
       payments: payments
-    });
+    };
+
+    // Cache the response for 3 minutes
+    dataCache.set(cacheKey, responseData);
+
+    res.json(responseData);
   } catch (error) {
     console.error('Error in getUserUsage:', error);
     next(error);

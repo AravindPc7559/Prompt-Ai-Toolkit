@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import morgan from 'morgan';
+import compression from 'compression';
+import responseTime from 'response-time';
 import apiRoutes from './routes/apiRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
@@ -8,6 +11,7 @@ import contactRoutes from './routes/contactRoutes.js';
 import healthRoutes from './routes/healthRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { validateEnv } from './config/validateEnv.js';
+import { performanceMonitor } from './middleware/performance.js';
 
 // Validate environment variables on startup
 try {
@@ -18,6 +22,25 @@ try {
 }
 
 const app = express();
+
+// Compression middleware - compress all responses
+app.use(compression({
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  },
+  level: 6 // Balance between speed and compression ratio
+}));
+
+// Response time header - track API performance
+app.use(responseTime((req, res, time) => {
+  // Log slow requests
+  if (time > 1000) {
+    console.warn(`⚠️ Slow request: ${req.method} ${req.url} - ${time.toFixed(2)}ms`);
+  }
+}));
 
 // Security middleware - Helmet for HTTP headers
 app.use(helmet({
@@ -38,41 +61,10 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false // Allow Razorpay iframes
 }));
 
-// CORS configuration - allow client URL and Chrome extension requests
+// CORS configuration - allow all origins
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, curl, Postman, or Chrome extensions)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    const allowedOrigins = [
-      process.env.CLIENT_URL || 'http://localhost:5173',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173'
-    ];
-    
-    // Allow Chrome extension origins (chrome-extension://*)
-    if (origin.startsWith('chrome-extension://')) {
-      return callback(null, true);
-    }
-    
-    // Allow localhost origins for development
-    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
-      return callback(null, true);
-    }
-    
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    
-    // For extension content scripts, they run in the context of the webpage
-    // So we need to allow requests from any origin but validate via token
-    // This is safe because we validate the JWT token on every request
-    callback(null, true);
-  },
-  credentials: true,
+  origin: '*',
+  credentials: false,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   maxAge: 86400 // 24 hours
@@ -81,6 +73,36 @@ app.use(cors({
 // Body parser with size limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Performance monitoring
+app.use(performanceMonitor);
+
+// HTTP request logging with Morgan
+// Custom format to include more details
+morgan.token('user-id', (req) => {
+  return req.user?.id || 'anonymous';
+});
+
+morgan.token('body', (req) => {
+  // Don't log sensitive data like passwords
+  if (req.body && Object.keys(req.body).length > 0) {
+    const sanitized = { ...req.body };
+    if (sanitized.password) sanitized.password = '[REDACTED]';
+    if (sanitized.token) sanitized.token = '[REDACTED]';
+    if (sanitized.razorpay_signature) sanitized.razorpay_signature = '[REDACTED]';
+    return JSON.stringify(sanitized);
+  }
+  return '-';
+});
+
+// Use different formats for development and production
+if (process.env.NODE_ENV === 'production') {
+  // Production: JSON format for log aggregation
+  app.use(morgan(':remote-addr - :user-id [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" :response-time ms'));
+} else {
+  // Development: Detailed colorful format
+  app.use(morgan(':method :url :status :response-time ms - :res[content-length] - :user-id'));
+}
 
 // Routes
 app.use('/health', healthRoutes);

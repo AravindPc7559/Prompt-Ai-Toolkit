@@ -3,9 +3,11 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Initialize OpenAI client
+// Initialize OpenAI client with performance optimizations
 export const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
+  timeout: 30000, // 30 second timeout
+  maxRetries: 2, // Retry failed requests twice
 });
 
 // Get OpenAI model from environment or use default

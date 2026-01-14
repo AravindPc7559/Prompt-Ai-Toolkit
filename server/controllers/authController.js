@@ -72,8 +72,9 @@ export const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // Find user by email
-    const user = await User.findOne({ email: email.toLowerCase() });
+    // Find user by email - with projection for performance
+    const user = await User.findOne({ email: email.toLowerCase() })
+      .select('email name passwordHash isActive lastLoginAt');
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -150,8 +151,9 @@ export const validateToken = async (req, res, next) => {
       });
     }
 
-    // Get user information
-    const user = await User.findById(decoded.userId).select('-passwordHash');
+    // Get user information - with projection
+    const user = await User.findById(decoded.userId)
+      .select('email name isActive freeTrialsUsed isSubscribed subscriptionExpiresAt');
 
     if (!user || !user.isActive) {
       return res.json({
@@ -176,7 +178,8 @@ export const validateToken = async (req, res, next) => {
     const usageStatus = await canUseService(user._id);
     
     // Refresh user data to get latest subscription status after potential updates
-    const updatedUser = await User.findById(user._id).select('-passwordHash');
+    const updatedUser = await User.findById(user._id)
+      .select('email name freeTrialsUsed isSubscribed subscriptionExpiresAt');
 
     res.json({
       valid: true,

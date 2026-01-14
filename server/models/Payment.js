@@ -46,7 +46,10 @@ const paymentSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound indexes for performance
 paymentSchema.index({ userId: 1, createdAt: -1 });
-paymentSchema.index({ razorpayOrderId: 1 });
+paymentSchema.index({ userId: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ razorpayOrderId: 1 }, { unique: true });
+paymentSchema.index({ razorpayPaymentId: 1 }, { unique: true, sparse: true });
 
 export const Payment = mongoose.model('Payment', paymentSchema);

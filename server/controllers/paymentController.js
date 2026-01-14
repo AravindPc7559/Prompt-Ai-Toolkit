@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { User } from '../models/User.js';
 import { Payment } from '../models/Payment.js';
 import { config } from '../config/app.js';
+import { invalidateUserCache } from '../utils/cache.js';
 
 // Lazy initialization of Razorpay instance
 let razorpay = null;
@@ -167,8 +168,9 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
     
-    // Update user subscription
-    const user = await User.findById(userId);
+    // Update user subscription - with projection
+    const user = await User.findById(userId)
+      .select('email name isSubscribed subscriptionExpiresAt');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -183,6 +185,9 @@ export const verifyPayment = async (req, res, next) => {
     user.isSubscribed = true;
     user.subscriptionExpiresAt = subscriptionExpiresAt;
     await user.save();
+    
+    // Invalidate user cache after subscription update
+    invalidateUserCache(userId);
 
     // Save payment record with audit information
     const payment = new Payment({

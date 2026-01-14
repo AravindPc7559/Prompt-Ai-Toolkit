@@ -15,12 +15,23 @@ mongoose.set('sanitizeProjection', true); // Prevent projection injection
 export const connectDB = async () => {
   try {
     const conn = await mongoose.connect(MONGODB_URI, {
-      // These options are recommended for Mongoose 6+
-      // useNewUrlParser: true,
-      // useUnifiedTopology: true,
+      // Connection pooling for better performance
+      maxPoolSize: 10, // Maximum number of connections in the pool
+      minPoolSize: 2, // Minimum number of connections
+      socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+      serverSelectionTimeoutMS: 5000, // Timeout for server selection
+      heartbeatFrequencyMS: 10000, // Check connection health every 10 seconds
+      
+      // Performance optimizations
+      retryWrites: true, // Retry failed writes
+      retryReads: true, // Retry failed reads
+      
+      // Compression
+      compressors: ['zlib'], // Enable compression for data transfer
     });
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    console.log(`📊 Connection pool size: min=${2}, max=${10}`);
     return conn;
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);

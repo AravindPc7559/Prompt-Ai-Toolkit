@@ -39,7 +39,9 @@ const contactSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound indexes for performance
 contactSchema.index({ userId: 1, createdAt: -1 });
+contactSchema.index({ userId: 1, status: 1, createdAt: -1 });
 contactSchema.index({ status: 1, createdAt: -1 });
 
 export const Contact = mongoose.model('Contact', contactSchema);

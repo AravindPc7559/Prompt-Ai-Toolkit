@@ -52,6 +52,11 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound indexes for performance
+userSchema.index({ email: 1, isActive: 1 });
+userSchema.index({ isSubscribed: 1, subscriptionExpiresAt: 1 });
+userSchema.index({ createdAt: -1 });
+
 // Update the updatedAt field before saving
 userSchema.pre('save', function(next) {
   this.updatedAt = Date.now();

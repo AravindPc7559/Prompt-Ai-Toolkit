@@ -1,39 +1,62 @@
-// Content script to show floating popup on text selection and rewrite prompts
+/**
+ * Prompt AI Toolkit - Content Script
+ * Handles text selection, authentication, and AI-powered text transformations
+ */
 
-// Import config utilities
-let configUtils = null;
-(async () => {
-  try {
-    // For Chrome extensions, we'll use a different approach since content scripts can't use ES6 imports directly
-    // Config functions are defined inline below
-  } catch (e) {
-    console.error('Error loading config utils:', e);
-  }
-})();
+// ============================================================================
+// CONSTANTS & CONFIGURATION
+// ============================================================================
 
-let floatingPopup = null;
-let grammarPopup = null;
-let emailPopup = null;
-let loginPopup = null;
-let selectionTimeout = null;
-let isProcessingRewrite = false;
-let isProcessingGrammar = false;
-let isProcessingEmail = false;
-let authToken = null;
-let isAuthenticated = false;
-let extensionContextValid = true;
+const CONFIG = {
+  MIN_SELECTION_LENGTH: 5,
+  ICON_SIZE: 40,
+  ICON_GAP: 8,
+  MIN_MARGIN: 10,
+  SELECTION_DEBOUNCE: 100,
+  SYNC_INTERVAL: 10000, // 10 seconds to avoid quota issues
+  NETWORK_ERROR_LOG_INTERVAL: 30000, // 30 seconds
+  TOKEN_EXPIRY_DAYS: 30,
+  MAX_DOM_DEPTH: 30,
+  DEFAULT_SERVER_URL: 'http://localhost:3000',
+  DEFAULT_CLIENT_URL: 'http://localhost:5173',
+};
+
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
+const state = {
+  floatingPopup: null,
+  grammarPopup: null,
+  emailPopup: null,
+  loginPopup: null,
+  selectionTimeout: null,
+  syncInterval: null,
+  isProcessingRewrite: false,
+  isProcessingGrammar: false,
+  isProcessingEmail: false,
+  authToken: null,
+  isAuthenticated: false,
+  extensionContextValid: true,
+  
+  // Auth status cache
+  authStatusCache: {
+    status: null,
+    timestamp: 0,
+    ttl: 60000, // 1 minute cache
+  },
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 /**
  * Check if extension context is still valid
- * This prevents "Extension context invalidated" errors
  */
 function isExtensionContextValid() {
   try {
-    // Try to access chrome.runtime.id - if this throws, context is invalid
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
-      return true;
-    }
-    return false;
+    return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
   } catch (e) {
     return false;
   }
@@ -45,21 +68,20 @@ function isExtensionContextValid() {
 function safeChromeStorage(operation) {
   return new Promise((resolve, reject) => {
     if (!isExtensionContextValid()) {
-      extensionContextValid = false;
+      state.extensionContextValid = false;
       reject(new Error('Extension context invalidated'));
       return;
     }
-    
+
     try {
       operation((result) => {
-        // Check if there was a runtime error
         if (chrome.runtime.lastError) {
           const error = chrome.runtime.lastError.message;
           if (error && error.includes('Extension context invalidated')) {
-            extensionContextValid = false;
+            state.extensionContextValid = false;
             reject(new Error('Extension context invalidated'));
           } else {
-            reject(new Error(chrome.runtime.lastError.message));
+            reject(new Error(error));
           }
         } else {
           resolve(result);
@@ -67,777 +89,94 @@ function safeChromeStorage(operation) {
       });
     } catch (e) {
       if (e.message && e.message.includes('Extension context invalidated')) {
-        extensionContextValid = false;
+        state.extensionContextValid = false;
       }
       reject(e);
     }
   });
 }
 
-// Wait for DOM to be ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
-
-function init() {
-  // Listen for text selection
-  document.addEventListener('mouseup', handleMouseUp);
-  document.addEventListener('selectionchange', handleSelectionChange);
-  
-  // Listen for auth token from login website
-  window.addEventListener('promptRewriterAuth', handleAuthToken);
-  
-  // Listen for logout event from login website
-  window.addEventListener('promptRewriterLogout', handleLogout);
-  
-  // Listen for storage changes (when token is updated from other tabs/pages)
-  if (isExtensionContextValid()) {
-    try {
-      chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (!isExtensionContextValid()) {
-          return; // Don't process if context is invalid
-        }
-        
-        if (areaName === 'sync' && changes.authToken) {
-          console.log('Auth token changed in storage, re-checking auth status');
-          const newToken = changes.authToken.newValue;
-          
-          if (newToken && newToken.token) {
-            // Token was added or updated
-            authToken = newToken.token;
-            isAuthenticated = true;
-            checkAuthStatus().then((status) => {
-              console.log('Auth status after storage change:', status);
-              // Re-check selection if there's one
-              setTimeout(() => {
-                checkSelection();
-              }, 100);
-            }).catch((err) => {
-              if (!err.message || !err.message.includes('Extension context invalidated')) {
-                console.error('Error checking auth status after storage change:', err);
-              }
-            });
-          } else {
-            // Token was removed
-            authToken = null;
-            isAuthenticated = false;
-            hideFloatingPopup();
-          }
-        }
-      });
-    } catch (e) {
-      if (e.message && e.message.includes('Extension context invalidated')) {
-        extensionContextValid = false;
-        console.warn('Extension context invalidated, storage listener not available');
-      }
-    }
-  }
-  
-  // Check if we're on the client origin and sync token from localStorage
-  syncTokenFromLocalStorage();
-  
-  // Also periodically check for token sync (in case event was missed)
-  // This helps when user logs in and then navigates to another page
-  const syncInterval = setInterval(() => {
-    if (!isExtensionContextValid()) {
-      clearInterval(syncInterval);
-      return;
-    }
-    syncTokenFromLocalStorage();
-  }, 2000); // Check every 2 seconds
-  
-  // Also check for existing token in storage on page load
-  checkAuthStatus().then((status) => {
-    console.log('Initial auth check on page load:', status);
-  }).catch((err) => {
-    console.error('Error in initial auth check:', err);
-  });
-  
-  // Add CSS styles first
-  addStyles();
+/**
+ * Normalize URL by removing trailing slashes
+ */
+function normalizeUrl(url) {
+  return url ? url.replace(/\/+$/, '') : url;
 }
 
 /**
- * Sync token from localStorage to chrome.storage.sync
- * This allows the token to be accessible from other websites
- * Checks on any page that has access to localStorage (same origin as login page)
+ * Log error only if it's not an extension context error
  */
-async function syncTokenFromLocalStorage() {
-  try {
-    // Check if extension context is still valid
-    if (!isExtensionContextValid()) {
-      return; // Silently return if context is invalid
-    }
-    
-    // Check if we're on the same origin as the login page (localhost:5173)
-    const isClientOrigin = window.location.hostname === 'localhost' && 
-                          (window.location.port === '5173' || window.location.port === '');
-    
-    if (isClientOrigin) {
-      // Check localStorage for token
-      const authDataStr = localStorage.getItem('authToken');
-      if (authDataStr) {
-        try {
-          const authData = JSON.parse(authDataStr);
-          if (authData && authData.token) {
-            // Sync to chrome.storage.sync
-            const config = await getConfig();
-            
-            try {
-              await safeChromeStorage((callback) => {
-                chrome.storage.sync.set({
-                  authToken: authData,
-                  serverUrl: config.serverUrl
-                }, callback);
-              });
-              
-              console.log('Token synced from localStorage to extension storage');
-              // Update local state
-              authToken = authData.token;
-              isAuthenticated = true;
-              // Re-check auth status to get service availability
-              checkAuthStatus().then((status) => {
-                console.log('Auth status after sync:', status);
-              }).catch((err) => {
-                if (!err.message || !err.message.includes('Extension context invalidated')) {
-                  console.error('Error checking auth status after sync:', err);
-                }
-              });
-            } catch (e) {
-              if (e.message && e.message.includes('Extension context invalidated')) {
-                extensionContextValid = false;
-                console.warn('Extension context invalidated, cannot sync token');
-              } else {
-                console.error('Error syncing token to chrome.storage:', e);
-              }
-            }
-          }
-        } catch (e) {
-          if (e.message && !e.message.includes('Extension context invalidated')) {
-            console.error('Error parsing auth data from localStorage:', e);
-          }
-        }
-      } else {
-        // If localStorage doesn't have token, clear chrome.storage.sync too
-        try {
-          await safeChromeStorage((callback) => {
-            chrome.storage.sync.remove(['authToken'], callback);
-          });
-          console.log('Token cleared from extension storage (localStorage empty)');
-          authToken = null;
-          isAuthenticated = false;
-        } catch (e) {
-          if (e.message && !e.message.includes('Extension context invalidated')) {
-            console.error('Error clearing token from chrome.storage:', e);
-          }
-        }
-      }
-    }
-  } catch (error) {
-    if (error.message && !error.message.includes('Extension context invalidated')) {
-      console.error('Error syncing token from localStorage:', error);
-    }
+function logError(context, error) {
+  if (!error) return;
+  
+  const isContextError = error.message && 
+    (error.message.includes('Extension context invalidated') || 
+     error.message.includes('Extension context'));
+  
+  if (!isContextError) {
+    console.error(`[${context}]`, error);
   }
 }
 
 /**
- * Handle auth token from login website
+ * Log network error with throttling to avoid console spam
  */
-async function handleAuthToken(event) {
-  try {
-    // Check if extension context is still valid
-    if (!isExtensionContextValid()) {
-      console.warn('Extension context invalidated, cannot handle auth token');
-      return;
-    }
-    
-    const { token, serverUrl } = event.detail;
-    console.log('Received auth token event:', { hasToken: !!token, serverUrl });
-    
-    if (!token) {
-      console.error('No token in event detail');
-      return;
-    }
-    
-    const authData = {
-      token: token,
-      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() // 30 days
-    };
-    
-    // Use provided serverUrl or get from config
-    const config = await getConfig();
-    const finalServerUrl = serverUrl || config.serverUrl;
-    
-    try {
-      await safeChromeStorage((callback) => {
-        chrome.storage.sync.set({
-          authToken: authData,
-          serverUrl: finalServerUrl
-        }, callback);
-      });
-      
-      console.log('Token stored in extension storage from login website');
-      // Update local state
-      authToken = token;
-      isAuthenticated = true;
-      console.log('Auth state updated - authenticated:', isAuthenticated);
-      
-      // Force a re-check of auth status to get service availability
-      checkAuthStatus().then((status) => {
-        console.log('Auth status after login:', status);
-        // If we have a selection, re-check it to show icons
-        const selection = window.getSelection();
-        if (selection && selection.rangeCount > 0) {
-          const selectedText = selection.toString().trim();
-          if (selectedText.length >= 5) {
-            const range = selection.getRangeAt(0);
-            if (range && !range.collapsed && isSelectionInFormField(range)) {
-              // Re-check selection to show appropriate icons
-              setTimeout(() => {
-                checkSelection();
-              }, 100);
-            }
-          }
-        }
-      }).catch((err) => {
-        if (!err.message || !err.message.includes('Extension context invalidated')) {
-          console.error('Error checking auth status after login:', err);
-        }
-      });
-      
-      // Notify background script
-      if (isExtensionContextValid()) {
-        chrome.runtime.sendMessage({
-          type: 'AUTH_TOKEN_SET',
-          token: token
-        }).catch(() => {
-          // Ignore errors
-        });
-      }
-    } catch (e) {
-      if (e.message && e.message.includes('Extension context invalidated')) {
-        extensionContextValid = false;
-        console.warn('Extension context invalidated, cannot store token');
-      } else {
-        console.error('Error storing token:', e);
-      }
-    }
-  } catch (error) {
-    if (error.message && !error.message.includes('Extension context invalidated')) {
-      console.error('Error handling auth token:', error);
-    }
+async function logNetworkError(error) {
+  if (!error || !error.message || !error.message.includes('Failed to fetch')) {
+    return;
+  }
+
+  const lastLog = window.lastNetworkErrorLog || 0;
+  const now = Date.now();
+  
+  if (now - lastLog > CONFIG.NETWORK_ERROR_LOG_INTERVAL) {
+    window.lastNetworkErrorLog = now;
+    const serverUrl = await getServerUrl().catch(() => 'unknown');
+    console.warn('Network error - check if server is running at:', serverUrl);
+    console.warn('Possible causes: Server not running or network problems');
   }
 }
 
-/**
- * Handle logout event from login website
- */
-async function handleLogout() {
-  try {
-    // Check if extension context is still valid
-    if (!isExtensionContextValid()) {
-      // Update local state even if context is invalid
-      authToken = null;
-      isAuthenticated = false;
-      hideFloatingPopup();
-      return;
-    }
-    
-    // Clear token from chrome.storage.sync
-    try {
-      await safeChromeStorage((callback) => {
-        chrome.storage.sync.remove(['authToken'], callback);
-      });
-      
-      console.log('Token removed from extension storage on logout');
-      // Update local state
-      authToken = null;
-      isAuthenticated = false;
-      
-      // Hide any visible popups
-      hideFloatingPopup();
-      
-      // Notify background script
-      if (isExtensionContextValid()) {
-        chrome.runtime.sendMessage({
-          type: 'AUTH_TOKEN_REMOVED'
-        }).catch(() => {
-          // Ignore errors
-        });
-      }
-    } catch (e) {
-      if (e.message && e.message.includes('Extension context invalidated')) {
-        extensionContextValid = false;
-      }
-      // Still update local state
-      authToken = null;
-      isAuthenticated = false;
-      hideFloatingPopup();
-    }
-  } catch (error) {
-    if (error.message && !error.message.includes('Extension context invalidated')) {
-      console.error('Error handling logout:', error);
-    }
-    // Still update local state
-    authToken = null;
-    isAuthenticated = false;
-    hideFloatingPopup();
-  }
-}
-
-function handleMouseUp() {
-  clearTimeout(selectionTimeout);
-  selectionTimeout = setTimeout(() => {
-    checkSelection();
-  }, 100);
-}
-
-function handleSelectionChange() {
-  clearTimeout(selectionTimeout);
-  selectionTimeout = setTimeout(() => {
-    checkSelection();
-  }, 100);
-}
-
-async function checkSelection() {
-  try {
-    // Don't show popup if we're currently processing
-    if (isProcessingRewrite || isProcessingGrammar || isProcessingEmail) {
-      return;
-    }
-    
-    const selection = window.getSelection();
-    
-    if (!selection || selection.rangeCount === 0) {
-      hideFloatingPopup();
-      return;
-    }
-    
-    const selectedText = selection.toString().trim();
-    
-    if (selectedText.length >= 5) {
-      const range = selection.getRangeAt(0);
-      if (range && !range.collapsed) {
-        // Only show popup if selection is in a form field
-        if (isSelectionInFormField(range)) {
-          // Check authentication status before showing popup
-          // If check fails, show login button as fallback
-          let authStatus = { authenticated: false, canUseService: false };
-          try {
-            authStatus = await checkAuthStatus();
-            console.log('Auth check result:', authStatus);
-          } catch (error) {
-            console.error('Error checking auth status:', error);
-            authStatus = { authenticated: false, canUseService: false };
-          }
-          
-          if (authStatus.authenticated) {
-            if (authStatus.canUseService) {
-              console.log('User authenticated and can use service, showing icons');
-              showFloatingPopup(range, selectedText);
-            } else {
-              console.log('User authenticated but cannot use service, showing purchase icon');
-              showPurchaseIcon(range, selectedText, authStatus.message || 'Free trial exhausted. Please subscribe to continue.');
-            }
-          } else {
-            console.log('User not authenticated, showing login button');
-            showLoginButton(range, selectedText);
-          }
-        } else {
-          hideFloatingPopup();
-        }
-      }
-    } else {
-      hideFloatingPopup();
-    }
-  } catch (error) {
-    console.error('Error in checkSelection:', error);
-    // On error, try to show login button as fallback
-    try {
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0) {
-        const selectedText = selection.toString().trim();
-        if (selectedText.length >= 5) {
-          const range = selection.getRangeAt(0);
-          if (range && !range.collapsed && isSelectionInFormField(range)) {
-            showLoginButton(range, selectedText);
-          }
-        }
-      }
-    } catch (fallbackError) {
-      console.error('Error in fallback:', fallbackError);
-    }
-  }
-}
-
-function isSelectionInFormField(range) {
-  if (!range || range.collapsed) {
-    return false;
-  }
-  
-  // Get the common ancestor container
-  let container = range.commonAncestorContainer;
-  
-  // If it's a text node, get its parent
-  if (container.nodeType === Node.TEXT_NODE) {
-    container = container.parentElement;
-  }
-  
-  // If container is not an element, return false
-  if (!container || container.nodeType !== Node.ELEMENT_NODE) {
-    return false;
-  }
-  
-  // Helper function to check if an element is a form field
-  function isFormFieldElement(el) {
-    if (!el || !el.nodeType || el.nodeType !== Node.ELEMENT_NODE) return false;
-    
-    // Check for textarea
-    if (el.tagName === 'TEXTAREA') {
-      return true;
-    }
-    
-    // Check for input fields (editable types)
-    if (el.tagName === 'INPUT') {
-      const inputType = (el.type || '').toLowerCase();
-      const editableTypes = ['text', 'email', 'search', 'url', 'tel', 'password', 'number'];
-      // If no type specified, default to text (editable)
-      if (!inputType || editableTypes.includes(inputType)) {
-        return true;
-      }
-    }
-    
-    // Check for contenteditable elements (including partial matches)
-    const contentEditable = el.contentEditable;
-    if (contentEditable === 'true' || contentEditable === true || el.isContentEditable) {
-      return true;
-    }
-    
-    // Check for role="textbox" (common in React/Vue components)
-    const role = el.getAttribute && el.getAttribute('role');
-    if (role === 'textbox' || role === 'combobox' || role === 'searchbox') {
-      return true;
-    }
-    
-    // Check for aria attributes that indicate editable fields
-    const ariaMultiline = el.getAttribute && el.getAttribute('aria-multiline');
-    const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
-    if (ariaMultiline === 'true' || (ariaLabel && (ariaLabel.toLowerCase().includes('input') || ariaLabel.toLowerCase().includes('text')))) {
-      // Additional check: make sure it's actually editable
-      if (el.contentEditable === 'true' || el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['text', 'email', 'search', 'url', 'tel', 'password'].includes((el.type || '').toLowerCase()))) {
-        return true;
-      }
-    }
-    
-    // Check for common form field classes/attributes used in frameworks
-    const className = el.className || '';
-    if (typeof className === 'string') {
-      const lowerClass = className.toLowerCase();
-      // Expanded list of common form field class patterns
-      if (lowerClass.includes('textarea') || 
-          lowerClass.includes('input-field') || 
-          lowerClass.includes('text-input') ||
-          lowerClass.includes('form-control') ||
-          lowerClass.includes('form-input') ||
-          lowerClass.includes('editable') ||
-          lowerClass.includes('editor') ||
-          lowerClass.includes('ql-editor') || // Quill editor
-          lowerClass.includes('ce-paragraph') || // ContentEditable patterns
-          lowerClass.includes('contenteditable') ||
-          lowerClass.includes('input-text') ||
-          lowerClass.includes('textfield') ||
-          lowerClass.includes('text-field') ||
-          lowerClass.includes('input-text') ||
-          lowerClass.includes('cm-editor') || // CodeMirror
-          lowerClass.includes('monaco-editor') || // Monaco editor
-          lowerClass.includes('ace_editor') || // Ace editor
-          lowerClass.includes('wysiwyg') ||
-          lowerClass.includes('rich-text') ||
-          lowerClass.includes('rich-text-editor') ||
-          lowerClass.includes('prosemirror') || // ProseMirror
-          lowerClass.includes('slate') || // Slate editor
-          lowerClass.includes('draft') || // Draft.js
-          lowerClass.includes('lexical') || // Lexical editor
-          lowerClass.includes('tiptap')) { // Tiptap editor
-        return true;
-      }
-    }
-    
-    // Check for ID patterns that might indicate editable fields
-    const id = el.id || '';
-    if (typeof id === 'string' && id.length > 0) {
-      const lowerId = id.toLowerCase();
-      if (lowerId.includes('input') || 
-          lowerId.includes('textarea') || 
-          lowerId.includes('editor') ||
-          lowerId.includes('textfield') ||
-          lowerId.includes('prompt') ||
-          lowerId.includes('message')) {
-        // Additional verification: check if it's actually editable
-        if (el.contentEditable === 'true' || el.isContentEditable || 
-            el.tagName === 'TEXTAREA' || 
-            (el.tagName === 'INPUT' && ['text', 'email', 'search', 'url', 'tel', 'password'].includes((el.type || '').toLowerCase()))) {
-          return true;
-        }
-      }
-    }
-    
-    // Check for data attributes that might indicate editable fields
-    if (el.getAttribute) {
-      const dataEditable = el.getAttribute('data-editable');
-      const dataContentEditable = el.getAttribute('data-contenteditable');
-      if (dataEditable === 'true' || dataContentEditable === 'true') {
-        return true;
-      }
-    }
-    
-    // Check if element can receive focus and is likely editable
-    // This is a fallback for complex frameworks
-    try {
-      const tabIndex = el.getAttribute && el.getAttribute('tabindex');
-      if (tabIndex !== null && tabIndex !== '-1') {
-        // Check if it's likely an input by checking if it can be focused
-        // and has text selection capability
-        if (el.contentEditable === 'true' || el.isContentEditable) {
-          return true;
-        }
-      }
-    } catch (e) {
-      // Ignore errors
-    }
-    
-    return false;
-  }
-  
-  // Traverse up the DOM tree to find form fields
-  let element = container;
-  let depth = 0;
-  const maxDepth = 30; // Increased depth for complex nested structures
-  
-  while (element && depth < maxDepth) {
-    // Check current element
-    if (isFormFieldElement(element)) {
-      return true;
-    }
-    
-    // Check if element is inside shadow DOM
-    try {
-      const rootNode = element.getRootNode ? element.getRootNode() : null;
-      if (rootNode instanceof ShadowRoot) {
-        const shadowHost = rootNode.host;
-        if (shadowHost && isFormFieldElement(shadowHost)) {
-          return true;
-        }
-        // Also check elements within shadow DOM
-        if (isFormFieldElement(element)) {
-          return true;
-        }
-      }
-    } catch (e) {
-      // Ignore shadow DOM errors
-    }
-    
-    // Move to parent element
-    element = element.parentElement;
-    depth++;
-    
-    // Stop if we've reached the body or html element
-    if (!element || element.tagName === 'BODY' || element.tagName === 'HTML') {
-      break;
-    }
-  }
-  
-  // Final fallback: check if the selection is within an element that can be edited
-  // This handles edge cases where frameworks use non-standard structures
-  try {
-    const startContainer = range.startContainer;
-    let checkElement = startContainer.nodeType === Node.TEXT_NODE 
-      ? startContainer.parentElement 
-      : startContainer;
-    
-    while (checkElement && checkElement !== document.body) {
-      // Check if element or any parent has contenteditable
-      if (checkElement.contentEditable === 'true' || checkElement.isContentEditable) {
-        return true;
-      }
-      // Check if it's an input or textarea
-      if (checkElement.tagName === 'INPUT' || checkElement.tagName === 'TEXTAREA') {
-        return true;
-      }
-      // More aggressive check: if element can receive focus and has text selection,
-      // it's likely editable (common in modern frameworks)
-      try {
-        if (checkElement.focus && typeof checkElement.focus === 'function') {
-          // Check if it has a value property or textContent that can be modified
-          if ('value' in checkElement || checkElement.textContent !== undefined) {
-            // Additional check: see if it's in a form-like context
-            const parent = checkElement.parentElement;
-            if (parent && (
-              parent.tagName === 'FORM' || 
-              parent.getAttribute('role') === 'form' ||
-              parent.className && typeof parent.className === 'string' && 
-                (parent.className.toLowerCase().includes('form') || 
-                 parent.className.toLowerCase().includes('input') ||
-                 parent.className.toLowerCase().includes('editor'))
-            )) {
-              return true;
-            }
-          }
-        }
-      } catch (e) {
-        // Ignore focus check errors
-      }
-      checkElement = checkElement.parentElement;
-    }
-  } catch (e) {
-    // Ignore errors in fallback
-  }
-  
-  return false;
-}
-
-/**
- * Check authentication status and validate token
- * @returns {Promise<boolean>} True if user is authenticated
- */
-async function checkAuthStatus() {
-  try {
-    // Check if extension context is still valid
-    if (!isExtensionContextValid()) {
-      return { authenticated: false, canUseService: false };
-    }
-    
-    // Get token from chrome.storage (JWT token stored after login)
-    let result;
-    try {
-      result = await safeChromeStorage((callback) => {
-        chrome.storage.sync.get(['authToken'], callback);
-      });
-    } catch (e) {
-      if (e.message && e.message.includes('Extension context invalidated')) {
-        extensionContextValid = false;
-        return { authenticated: false, canUseService: false };
-      }
-      throw e;
-    }
-    
-    if (!result.authToken || !result.authToken.token) {
-      console.log('No token found in storage');
-      authToken = null;
-      isAuthenticated = false;
-      return { authenticated: false, canUseService: false };
-    }
-    
-    const token = result.authToken.token;
-    
-    // If we already have a valid token in memory and it matches, we still need to check service availability
-    // So we'll proceed to validate with backend to get latest status
-    
-    const serverUrl = await getServerUrl();
-    
-    if (!serverUrl) {
-      console.error('Server URL not configured');
-      return { authenticated: false, canUseService: false };
-    }
-    
-    // Validate token with backend
-    const response = await fetch(`${serverUrl}/api/validate-token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ token }),
-      // Add mode and credentials for CORS
-      mode: 'cors',
-      credentials: 'omit'
-    });
-    
-    if (!response.ok) {
-      console.log('Token validation failed, response not ok:', response.status);
-      // Token is invalid, delete it
-      await deleteToken();
-      authToken = null;
-      isAuthenticated = false;
-      return { authenticated: false, canUseService: false };
-    }
-    
-    const data = await response.json();
-    if (data.valid) {
-      console.log('Token is valid, user authenticated');
-      authToken = token;
-      isAuthenticated = true;
-      // Return object with auth status and service availability
-      return {
-        authenticated: true,
-        canUseService: data.canUseService || false,
-        message: data.message || '',
-        remainingTrials: data.remainingTrials || 0
-      };
-    } else {
-      console.log('Token validation returned invalid');
-      await deleteToken();
-      authToken = null;
-      isAuthenticated = false;
-      return { authenticated: false, canUseService: false };
-    }
-  } catch (error) {
-    console.error('Error checking auth status:', error);
-    
-    // Provide more detailed error information
-    if (error.message && error.message.includes('Failed to fetch')) {
-      const serverUrl = await getServerUrl().catch(() => 'unknown');
-      console.error('Network error - check if server is running at:', serverUrl);
-      console.error('This could be due to:');
-      console.error('1. Server is not running');
-      console.error('2. CORS configuration blocking the request');
-      console.error('3. Network connectivity issues');
-    }
-    
-    // On error, don't block - show login button
-    authToken = null;
-    isAuthenticated = false;
-    return { authenticated: false, canUseService: false };
-  }
-}
+// ============================================================================
+// CONFIGURATION & STORAGE
+// ============================================================================
 
 /**
  * Get configuration from chrome.storage
  */
 async function getConfig() {
-  // Check if extension context is still valid
   if (!isExtensionContextValid()) {
-    // Return default config if context is invalid
-    return {
-      serverUrl: 'http://localhost:3000',
-      loginUrl: 'http://localhost:5173',
-      pricingPath: '/pricing',
-      dashboardPath: '/dashboard'
-    };
+    state.extensionContextValid = false;
+    const error = new Error('Extension context invalidated');
+    error.contextInvalidated = true;
+    throw error;
   }
-  
+
   try {
     const result = await safeChromeStorage((callback) => {
       chrome.storage.sync.get(['serverUrl', 'loginUrl'], callback);
     });
-    
+
     return {
-      serverUrl: result.serverUrl || 'http://localhost:3000',
-      loginUrl: result.loginUrl || 'http://localhost:5173',
+      serverUrl: result.serverUrl || CONFIG.DEFAULT_SERVER_URL,
+      loginUrl: result.loginUrl || CONFIG.DEFAULT_CLIENT_URL,
       pricingPath: '/pricing',
-      dashboardPath: '/dashboard'
+      dashboardPath: '/dashboard',
     };
   } catch (e) {
-    if (e.message && e.message.includes('Extension context invalidated')) {
-      extensionContextValid = false;
+    if (e && e.message && e.message.includes('Extension context invalidated')) {
+      state.extensionContextValid = false;
+      const error = new Error('Extension context invalidated');
+      error.contextInvalidated = true;
+      throw error;
     }
-    // Return default config on error
+    
+    // Return default config for other errors
     return {
-      serverUrl: 'http://localhost:3000',
-      loginUrl: 'http://localhost:5173',
+      serverUrl: CONFIG.DEFAULT_SERVER_URL,
+      loginUrl: CONFIG.DEFAULT_CLIENT_URL,
       pricingPath: '/pricing',
-      dashboardPath: '/dashboard'
+      dashboardPath: '/dashboard',
     };
   }
 }
@@ -848,46 +187,152 @@ async function getConfig() {
 async function getServerUrl() {
   try {
     const config = await getConfig();
-    const url = config.serverUrl || 'http://localhost:3000';
+    const url = config.serverUrl || CONFIG.DEFAULT_SERVER_URL;
     
-    // Validate URL format
     if (!url || typeof url !== 'string') {
       console.error('Invalid server URL:', url);
-      return 'http://localhost:3000'; // Fallback
+      return CONFIG.DEFAULT_SERVER_URL;
     }
     
-    // Remove trailing slash
-    return url.replace(/\/$/, '');
+    return normalizeUrl(url);
   } catch (error) {
-    console.error('Error getting server URL:', error);
-    return 'http://localhost:3000'; // Fallback
+    logError('getServerUrl', error);
+    return CONFIG.DEFAULT_SERVER_URL;
   }
 }
 
 /**
  * Get pricing URL
  */
-/**
- * Normalize URL by removing trailing slashes
- */
-function normalizeUrl(url) {
-  if (!url) return url;
-  return url.replace(/\/+$/, '');
-}
-
 async function getPricingUrl() {
-  const config = await getConfig();
-  const baseUrl = normalizeUrl(config.loginUrl);
-  return `${baseUrl}${config.pricingPath}`;
+  try {
+    const config = await getConfig();
+    const baseUrl = normalizeUrl(config.loginUrl);
+    return `${baseUrl}${config.pricingPath}`;
+  } catch (error) {
+    logError('getPricingUrl', error);
+    return `${CONFIG.DEFAULT_CLIENT_URL}/pricing`;
+  }
 }
 
 /**
  * Get login URL
  */
 async function getLoginUrl() {
-  const config = await getConfig();
-  const baseUrl = normalizeUrl(config.loginUrl);
-  return `${baseUrl}/login`;
+  try {
+    const config = await getConfig();
+    const baseUrl = normalizeUrl(config.loginUrl);
+    return `${baseUrl}/login`;
+  } catch (error) {
+    logError('getLoginUrl', error);
+    return `${CONFIG.DEFAULT_CLIENT_URL}/login`;
+  }
+}
+
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+/**
+ * Check authentication status and validate token
+ */
+async function checkAuthStatus() {
+  try {
+    if (!isExtensionContextValid()) {
+      return { authenticated: false, canUseService: false };
+    }
+
+    // Check cache first
+    const now = Date.now();
+    if (state.authStatusCache.status && 
+        (now - state.authStatusCache.timestamp) < state.authStatusCache.ttl) {
+      return state.authStatusCache.status;
+    }
+
+    // Get token from chrome.storage
+    let result;
+    try {
+      result = await safeChromeStorage((callback) => {
+        chrome.storage.sync.get(['authToken'], callback);
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('Extension context invalidated')) {
+        state.extensionContextValid = false;
+        return { authenticated: false, canUseService: false };
+      }
+      throw e;
+    }
+
+    if (!result.authToken || !result.authToken.token) {
+      state.authToken = null;
+      state.isAuthenticated = false;
+      return { authenticated: false, canUseService: false };
+    }
+
+    const token = result.authToken.token;
+    const serverUrl = await getServerUrl();
+
+    if (!serverUrl) {
+      console.error('Server URL not configured');
+      return { authenticated: false, canUseService: false };
+    }
+
+    // Validate token with backend
+    const response = await fetch(`${serverUrl}/api/validate-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+      mode: 'cors',
+      credentials: 'omit',
+    });
+
+    if (!response.ok) {
+      await deleteToken();
+      state.authToken = null;
+      state.isAuthenticated = false;
+      return { authenticated: false, canUseService: false, message: 'Token validation failed' };
+    }
+
+    const data = await response.json();
+
+    if (data.valid) {
+      state.authToken = token;
+      state.isAuthenticated = true;
+      const authStatus = {
+        authenticated: true,
+        canUseService: data.canUseService === true,
+        message: data.message || '',
+        remainingTrials: data.remainingTrials || 0,
+      };
+      
+      // Cache the auth status
+      state.authStatusCache.status = authStatus;
+      state.authStatusCache.timestamp = Date.now();
+      
+      return authStatus;
+    } else {
+      await deleteToken();
+      state.authToken = null;
+      state.isAuthenticated = false;
+      
+      // Cache the negative result
+      const authStatus = { authenticated: false, canUseService: false };
+      state.authStatusCache.status = authStatus;
+      state.authStatusCache.timestamp = Date.now();
+      
+      return authStatus;
+    }
+  } catch (error) {
+    await logNetworkError(error);
+    
+    if (error && error.message && !error.message.includes('Failed to fetch') && !error.message.includes('NetworkError')) {
+      logError('checkAuthStatus', error);
+    }
+
+    state.authToken = null;
+    state.isAuthenticated = false;
+    return { authenticated: false, canUseService: false };
+  }
 }
 
 /**
@@ -895,32 +340,1145 @@ async function getLoginUrl() {
  */
 async function deleteToken() {
   try {
-    if (!isExtensionContextValid()) {
-      return; // Silently return if context is invalid
-    }
-    
+    if (!isExtensionContextValid()) return;
+
     await safeChromeStorage((callback) => {
       chrome.storage.sync.remove(['authToken'], callback);
     });
+    
+    // Clear auth status cache
+    state.authStatusCache.status = null;
+    state.authStatusCache.timestamp = 0;
   } catch (error) {
     if (error.message && error.message.includes('Extension context invalidated')) {
-      extensionContextValid = false;
-      // Silently handle - extension will reload
+      state.extensionContextValid = false;
+    } else if (error.message && error.message.includes('MAX_WRITE_OPERATIONS_PER_MINUTE')) {
+      console.warn('Storage quota exceeded, will retry later');
     } else {
-      console.error('Error deleting token:', error);
+      logError('deleteToken', error);
     }
   }
 }
 
 /**
- * Redirect to login website
+ * Sync token from localStorage to chrome.storage.sync
+ */
+async function syncTokenFromLocalStorage() {
+  try {
+    if (!isExtensionContextValid()) return;
+
+    const isClientOrigin = window.location.hostname === 'localhost' &&
+      (window.location.port === '5173' || window.location.port === '');
+
+    if (!isClientOrigin) return;
+
+    const authDataStr = localStorage.getItem('authToken');
+
+    if (authDataStr) {
+      if (!isExtensionContextValid()) {
+        state.extensionContextValid = false;
+        return;
+      }
+
+      try {
+        const authData = JSON.parse(authDataStr);
+        if (!authData || !authData.token) return;
+
+        // Get config
+        let config;
+        try {
+          config = await getConfig();
+        } catch (configError) {
+          if (configError && (configError.message && configError.message.includes('Extension context invalidated') || configError.contextInvalidated)) {
+            state.extensionContextValid = false;
+            return;
+          }
+          config = {
+            serverUrl: CONFIG.DEFAULT_SERVER_URL,
+            loginUrl: CONFIG.DEFAULT_CLIENT_URL,
+          };
+        }
+
+        if (!isExtensionContextValid()) {
+          state.extensionContextValid = false;
+          return;
+        }
+
+        // Check if token has changed before writing
+        let shouldSync = true;
+        try {
+          const existing = await safeChromeStorage((callback) => {
+            chrome.storage.sync.get(['authToken'], callback);
+          });
+          if (existing.authToken && existing.authToken.token === authData.token) {
+            shouldSync = false;
+          }
+        } catch (e) {
+          // Proceed with sync if check fails
+        }
+
+        if (shouldSync) {
+          try {
+            await safeChromeStorage((callback) => {
+              chrome.storage.sync.set({
+                authToken: authData,
+                serverUrl: config.serverUrl,
+              }, callback);
+            });
+
+            console.log('Token synced from localStorage to extension storage');
+            
+            // Update auth status
+            checkAuthStatus().then((status) => {
+              if (status.authenticated) {
+                state.authToken = authData.token;
+                state.isAuthenticated = true;
+                setTimeout(() => checkSelection(), 100);
+              }
+            }).catch((err) => {
+              if (err && err.message && !err.message.includes('Extension context invalidated') && !err.message.includes('Failed to fetch')) {
+                logError('checkAuthStatus after sync', err);
+              }
+            });
+          } catch (e) {
+            if (e.message && e.message.includes('Extension context invalidated')) {
+              state.extensionContextValid = false;
+              return;
+            } else if (e.message && e.message.includes('MAX_WRITE_OPERATIONS_PER_MINUTE')) {
+              console.warn('Storage quota exceeded, will retry later');
+            } else {
+              logError('syncTokenFromLocalStorage', e);
+            }
+          }
+        } else {
+          // Token hasn't changed, just update local state
+          if (!state.authToken || state.authToken !== authData.token) {
+            state.authToken = authData.token;
+            state.isAuthenticated = true;
+          }
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          console.error('JSON parse error in syncTokenFromLocalStorage:', e);
+        } else if (e && e.message && e.message.includes('Extension context invalidated')) {
+          state.extensionContextValid = false;
+          return;
+        }
+      }
+    } else {
+      // Clear token if localStorage is empty
+      try {
+        await safeChromeStorage((callback) => {
+          chrome.storage.sync.remove(['authToken'], callback);
+        });
+        state.authToken = null;
+        state.isAuthenticated = false;
+      } catch (e) {
+        if (!e.message || !e.message.includes('Extension context invalidated')) {
+          logError('clearToken', e);
+        }
+      }
+    }
+  } catch (error) {
+    if (!error.message || !error.message.includes('Extension context invalidated')) {
+      logError('syncTokenFromLocalStorage', error);
+    }
+  }
+}
+
+/**
+ * Handle auth token from login website
+ */
+async function handleAuthToken(event) {
+  try {
+    if (!isExtensionContextValid()) {
+      console.warn('Extension context invalidated, cannot handle auth token');
+      return;
+    }
+
+    const { token, serverUrl } = event.detail;
+
+    if (!token) {
+      console.error('No token in event detail');
+      return;
+    }
+
+    const authData = {
+      token: token,
+      expiresAt: new Date(Date.now() + CONFIG.TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+    };
+
+    const config = await getConfig();
+    const finalServerUrl = serverUrl || config.serverUrl;
+
+    try {
+      // Check if token has changed before writing
+      let shouldWrite = true;
+      try {
+        const existing = await safeChromeStorage((callback) => {
+          chrome.storage.sync.get(['authToken'], callback);
+        });
+        if (existing.authToken && existing.authToken.token === token) {
+          shouldWrite = false;
+        }
+      } catch (e) {
+        // Proceed with write if check fails
+      }
+
+      if (shouldWrite) {
+        await safeChromeStorage((callback) => {
+          chrome.storage.sync.set({
+            authToken: authData,
+            serverUrl: finalServerUrl,
+          }, callback);
+        });
+
+        console.log('Token stored in extension storage from login website');
+      }
+
+      // Update auth status and show icons
+      checkAuthStatus().then((status) => {
+        if (status.authenticated) {
+          state.authToken = token;
+          state.isAuthenticated = true;
+        } else {
+          state.authToken = null;
+          state.isAuthenticated = false;
+        }
+
+        setTimeout(() => {
+          const selection = window.getSelection();
+          if (selection && selection.rangeCount > 0) {
+            const selectedText = selection.toString().trim();
+            if (selectedText.length >= CONFIG.MIN_SELECTION_LENGTH) {
+              const range = selection.getRangeAt(0);
+              if (range && !range.collapsed && isSelectionInFormField(range)) {
+                checkSelection();
+              }
+            }
+          } else {
+            checkSelection();
+          }
+        }, 300);
+      }).catch((err) => {
+        logError('checkAuthStatus after login', err);
+        // Optimistic update on error
+        state.authToken = token;
+        state.isAuthenticated = true;
+        setTimeout(() => checkSelection(), 300);
+      });
+
+      // Notify background script
+      if (isExtensionContextValid()) {
+        chrome.runtime.sendMessage({
+          type: 'AUTH_TOKEN_SET',
+          token: token,
+        }).catch(() => {});
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('Extension context invalidated')) {
+        state.extensionContextValid = false;
+        console.warn('Extension context invalidated, cannot store token');
+      } else if (e.message && e.message.includes('MAX_WRITE_OPERATIONS_PER_MINUTE')) {
+        console.warn('Storage quota exceeded, will retry later');
+      } else {
+        logError('handleAuthToken', e);
+      }
+    }
+  } catch (error) {
+    logError('handleAuthToken', error);
+  }
+}
+
+/**
+ * Handle logout event from login website
+ */
+async function handleLogout() {
+  try {
+    if (!isExtensionContextValid()) {
+      state.authToken = null;
+      state.isAuthenticated = false;
+      hideFloatingPopup();
+      return;
+    }
+
+    try {
+      await safeChromeStorage((callback) => {
+        chrome.storage.sync.remove(['authToken'], callback);
+      });
+
+      console.log('Token removed from extension storage on logout');
+      state.authToken = null;
+      state.isAuthenticated = false;
+      hideFloatingPopup();
+
+      if (isExtensionContextValid()) {
+        chrome.runtime.sendMessage({ type: 'AUTH_TOKEN_REMOVED' }).catch(() => {});
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('Extension context invalidated')) {
+        state.extensionContextValid = false;
+      }
+      state.authToken = null;
+      state.isAuthenticated = false;
+      hideFloatingPopup();
+    }
+  } catch (error) {
+    logError('handleLogout', error);
+    state.authToken = null;
+    state.isAuthenticated = false;
+    hideFloatingPopup();
+  }
+}
+
+// ============================================================================
+// SELECTION DETECTION
+// ============================================================================
+
+/**
+ * Handle mouse up event
+ */
+function handleMouseUp() {
+  clearTimeout(state.selectionTimeout);
+  state.selectionTimeout = setTimeout(() => checkSelection(), CONFIG.SELECTION_DEBOUNCE);
+}
+
+/**
+ * Handle selection change event
+ */
+function handleSelectionChange() {
+  clearTimeout(state.selectionTimeout);
+  state.selectionTimeout = setTimeout(() => checkSelection(), CONFIG.SELECTION_DEBOUNCE);
+}
+
+/**
+ * Check current selection and show appropriate popup
+ */
+async function checkSelection() {
+  try {
+    if (state.isProcessingRewrite || state.isProcessingGrammar || state.isProcessingEmail) {
+      return;
+    }
+
+    const selection = window.getSelection();
+
+    if (!selection || selection.rangeCount === 0) {
+      hideFloatingPopup();
+      return;
+    }
+
+    const selectedText = selection.toString().trim();
+
+    if (selectedText.length >= CONFIG.MIN_SELECTION_LENGTH) {
+      const range = selection.getRangeAt(0);
+      if (range && !range.collapsed && isSelectionInFormField(range)) {
+        // Check authentication status
+        let authStatus = { authenticated: false, canUseService: false };
+        
+        try {
+          authStatus = await checkAuthStatus();
+
+          // Update local state
+          if (authStatus.authenticated) {
+            try {
+              const result = await safeChromeStorage((callback) => {
+                chrome.storage.sync.get(['authToken'], callback);
+              });
+              if (result.authToken && result.authToken.token) {
+                state.authToken = result.authToken.token;
+                state.isAuthenticated = true;
+              }
+            } catch (e) {
+              // Continue with existing state
+            }
+          } else {
+            state.authToken = null;
+            state.isAuthenticated = false;
+          }
+        } catch (error) {
+          logError('checkAuthStatus in checkSelection', error);
+          authStatus = { authenticated: false, canUseService: false };
+        }
+
+        // Show appropriate popup
+        if (authStatus.authenticated) {
+          if (authStatus.canUseService === true) {
+            showFloatingPopup(range, selectedText);
+          } else {
+            showPurchaseIcon(range, selectedText, authStatus.message || 'Free trial exhausted. Please subscribe to continue.');
+          }
+        } else {
+          showLoginButton(range, selectedText);
+        }
+      } else {
+        hideFloatingPopup();
+      }
+    } else {
+      hideFloatingPopup();
+    }
+  } catch (error) {
+    logError('checkSelection', error);
+    
+    // Fallback to login button
+    try {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const selectedText = selection.toString().trim();
+        if (selectedText.length >= CONFIG.MIN_SELECTION_LENGTH) {
+          const range = selection.getRangeAt(0);
+          if (range && !range.collapsed && isSelectionInFormField(range)) {
+            showLoginButton(range, selectedText);
+          }
+        }
+      }
+    } catch (fallbackError) {
+      logError('checkSelection fallback', fallbackError);
+    }
+  }
+}
+
+/**
+ * Check if selection is in a form field
+ */
+function isSelectionInFormField(range) {
+  if (!range || range.collapsed) return false;
+
+  let container = range.commonAncestorContainer;
+
+  if (container.nodeType === Node.TEXT_NODE) {
+    container = container.parentElement;
+  }
+
+  if (!container || container.nodeType !== Node.ELEMENT_NODE) {
+    return false;
+  }
+
+  /**
+   * Check if element is a form field
+   */
+  function isFormFieldElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+
+    // Check for textarea
+    if (el.tagName === 'TEXTAREA') return true;
+
+    // Check for input fields
+    if (el.tagName === 'INPUT') {
+      const inputType = (el.type || '').toLowerCase();
+      const editableTypes = ['text', 'email', 'search', 'url', 'tel', 'password', 'number'];
+      return !inputType || editableTypes.includes(inputType);
+    }
+
+    // Check for contenteditable
+    if (el.contentEditable === 'true' || el.isContentEditable) return true;
+
+    // Check for role attributes
+    const role = el.getAttribute && el.getAttribute('role');
+    if (role === 'textbox' || role === 'combobox' || role === 'searchbox') return true;
+
+    // Check for aria attributes
+    const ariaMultiline = el.getAttribute && el.getAttribute('aria-multiline');
+    if (ariaMultiline === 'true') {
+      if (el.contentEditable === 'true' || el.isContentEditable || el.tagName === 'TEXTAREA') {
+        return true;
+      }
+    }
+
+    // Check for common form field classes
+    const className = el.className || '';
+    if (typeof className === 'string') {
+      const lowerClass = className.toLowerCase();
+      const formFieldPatterns = [
+        'textarea', 'input-field', 'text-input', 'form-control', 'form-input',
+        'editable', 'editor', 'ql-editor', 'ce-paragraph', 'contenteditable',
+        'textfield', 'text-field', 'cm-editor', 'monaco-editor', 'ace_editor',
+        'wysiwyg', 'rich-text', 'prosemirror', 'slate', 'draft', 'lexical', 'tiptap',
+      ];
+      if (formFieldPatterns.some(pattern => lowerClass.includes(pattern))) {
+        return true;
+      }
+    }
+
+    // Check for ID patterns
+    const id = el.id || '';
+    if (typeof id === 'string' && id.length > 0) {
+      const lowerId = id.toLowerCase();
+      const idPatterns = ['input', 'textarea', 'editor', 'textfield', 'prompt', 'message'];
+      if (idPatterns.some(pattern => lowerId.includes(pattern))) {
+        if (el.contentEditable === 'true' || el.isContentEditable || el.tagName === 'TEXTAREA' ||
+          (el.tagName === 'INPUT' && ['text', 'email', 'search', 'url', 'tel', 'password'].includes((el.type || '').toLowerCase()))) {
+          return true;
+        }
+      }
+    }
+
+    // Check for data attributes
+    if (el.getAttribute) {
+      const dataEditable = el.getAttribute('data-editable');
+      const dataContentEditable = el.getAttribute('data-contenteditable');
+      if (dataEditable === 'true' || dataContentEditable === 'true') return true;
+    }
+
+    return false;
+  }
+
+  // Traverse up the DOM tree
+  let element = container;
+  let depth = 0;
+
+  while (element && depth < CONFIG.MAX_DOM_DEPTH) {
+    if (isFormFieldElement(element)) return true;
+
+    // Check shadow DOM
+    try {
+      const rootNode = element.getRootNode ? element.getRootNode() : null;
+      if (rootNode instanceof ShadowRoot) {
+        const shadowHost = rootNode.host;
+        if (shadowHost && isFormFieldElement(shadowHost)) return true;
+        if (isFormFieldElement(element)) return true;
+      }
+    } catch (e) {
+      // Ignore shadow DOM errors
+    }
+
+    element = element.parentElement;
+    depth++;
+
+    if (!element || element.tagName === 'BODY' || element.tagName === 'HTML') {
+      break;
+    }
+  }
+
+  // Final fallback check
+  try {
+    const startContainer = range.startContainer;
+    let checkElement = startContainer.nodeType === Node.TEXT_NODE
+      ? startContainer.parentElement
+      : startContainer;
+
+    while (checkElement && checkElement !== document.body) {
+      if (checkElement.contentEditable === 'true' || checkElement.isContentEditable) return true;
+      if (checkElement.tagName === 'INPUT' || checkElement.tagName === 'TEXTAREA') return true;
+
+      try {
+        if (checkElement.focus && typeof checkElement.focus === 'function') {
+          if ('value' in checkElement || checkElement.textContent !== undefined) {
+            const parent = checkElement.parentElement;
+            if (parent && (
+              parent.tagName === 'FORM' ||
+              parent.getAttribute('role') === 'form' ||
+              (parent.className && typeof parent.className === 'string' &&
+                (parent.className.toLowerCase().includes('form') ||
+                  parent.className.toLowerCase().includes('input') ||
+                  parent.className.toLowerCase().includes('editor')))
+            )) {
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore focus check errors
+      }
+      
+      checkElement = checkElement.parentElement;
+    }
+  } catch (e) {
+    // Ignore errors in fallback
+  }
+
+  return false;
+}
+
+// ============================================================================
+// POPUP POSITIONING & DISPLAY
+// ============================================================================
+
+/**
+ * Get position for popup based on selection range
+ */
+function getPopupPosition(range) {
+  const firstCharRange = range.cloneRange();
+  firstCharRange.collapse(true);
+
+  let firstCharRect;
+  try {
+    const testRange = range.cloneRange();
+    testRange.collapse(true);
+    testRange.setEnd(testRange.startContainer, Math.min(testRange.startOffset + 1, testRange.startContainer.textContent?.length || 1));
+    firstCharRect = testRange.getBoundingClientRect();
+  } catch (e) {
+    firstCharRect = range.getBoundingClientRect();
+  }
+
+  if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
+    const startContainer = range.startContainer;
+    if (startContainer.nodeType === Node.TEXT_NODE) {
+      const textNode = startContainer;
+      const tempRange = document.createRange();
+      tempRange.setStart(textNode, range.startOffset);
+      tempRange.setEnd(textNode, Math.min(range.startOffset + 1, textNode.textContent.length));
+      firstCharRect = tempRange.getBoundingClientRect();
+    } else {
+      firstCharRect = range.getBoundingClientRect();
+    }
+  }
+
+  if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
+    return null;
+  }
+
+  const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
+  const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+
+  return {
+    rect: firstCharRect,
+    scrollX,
+    scrollY,
+  };
+}
+
+/**
+ * Adjust position to keep within viewport
+ */
+function adjustPosition(left, top, width = CONFIG.ICON_SIZE, height = CONFIG.ICON_SIZE, positionData) {
+  const { rect, scrollX, scrollY } = positionData;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  // Adjust horizontal position
+  if (left + width > scrollX + viewportWidth - CONFIG.MIN_MARGIN) {
+    left = scrollX + viewportWidth - width - CONFIG.MIN_MARGIN;
+  }
+  if (left < scrollX + CONFIG.MIN_MARGIN) {
+    left = scrollX + CONFIG.MIN_MARGIN;
+  }
+
+  // Adjust vertical position
+  if (top < scrollY + CONFIG.MIN_MARGIN) {
+    top = rect.bottom + scrollY + 8;
+  }
+  if (top + height > scrollY + viewportHeight - CONFIG.MIN_MARGIN) {
+    top = scrollY + viewportHeight - height - CONFIG.MIN_MARGIN;
+  }
+
+  return { left, top };
+}
+
+/**
+ * Setup click outside handler for popup
+ */
+function setupClickOutsideHandler(popup) {
+  setTimeout(() => {
+    const handleClick = (e) => {
+      if (popup && !popup.contains(e.target)) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < CONFIG.MIN_SELECTION_LENGTH) {
+          hideFloatingPopup();
+          document.removeEventListener('click', handleClick, true);
+          document.removeEventListener('mousedown', handleClick, true);
+        }
+      }
+    };
+    document.addEventListener('click', handleClick, true);
+    document.addEventListener('mousedown', handleClick, true);
+  }, 50);
+}
+
+/**
+ * Show login button
+ */
+function showLoginButton(range, selectedText) {
+  hideFloatingPopup();
+
+  try {
+    const positionData = getPopupPosition(range);
+    if (!positionData) return;
+
+    const { rect, scrollX, scrollY } = positionData;
+    let left = rect.left + scrollX - 5;
+    let top = rect.top + scrollY - CONFIG.ICON_SIZE - 8;
+
+    const adjusted = adjustPosition(left, top, CONFIG.ICON_SIZE, CONFIG.ICON_SIZE, positionData);
+
+    state.loginPopup = document.createElement('button');
+    state.loginPopup.id = 'prompt-login-popup';
+    state.loginPopup.className = 'pr-icon-btn pr-login-btn';
+    state.loginPopup.innerHTML = '<span class="pr-icon-emoji">🔐</span><span class="pr-tooltip">Login Required</span>';
+    state.loginPopup.style.left = `${Math.round(adjusted.left)}px`;
+    state.loginPopup.style.top = `${Math.round(adjusted.top)}px`;
+
+    document.body.appendChild(state.loginPopup);
+
+    state.loginPopup.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await redirectToLogin();
+    });
+
+    setupClickOutsideHandler(state.loginPopup);
+  } catch (error) {
+    logError('showLoginButton', error);
+  }
+}
+
+/**
+ * Show purchase icon
+ */
+function showPurchaseIcon(range, selectedText, message = 'Free trial exhausted. Please subscribe to continue.') {
+  hideFloatingPopup();
+
+  try {
+    const positionData = getPopupPosition(range);
+    if (!positionData) return;
+
+    const { rect, scrollX, scrollY } = positionData;
+    let left = rect.left + scrollX - 5;
+    let top = rect.top + scrollY - CONFIG.ICON_SIZE - 8;
+
+    const adjusted = adjustPosition(left, top, CONFIG.ICON_SIZE, CONFIG.ICON_SIZE, positionData);
+
+    state.loginPopup = document.createElement('button');
+    state.loginPopup.id = 'prompt-purchase-popup';
+    state.loginPopup.className = 'pr-icon-btn pr-subscription-btn';
+    state.loginPopup.innerHTML = `<span class="pr-icon-emoji">💳</span><span class="pr-tooltip">${message}</span>`;
+    state.loginPopup.style.left = `${Math.round(adjusted.left)}px`;
+    state.loginPopup.style.top = `${Math.round(adjusted.top)}px`;
+
+    document.body.appendChild(state.loginPopup);
+
+    state.loginPopup.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await redirectToPricing();
+    });
+
+    setupClickOutsideHandler(state.loginPopup);
+  } catch (error) {
+    logError('showPurchaseIcon', error);
+  }
+}
+
+/**
+ * Show subscription required button (after 403 error)
+ */
+function showSubscriptionRequired(range, selectedText, message) {
+  // Reuse showPurchaseIcon since they're identical
+  showPurchaseIcon(range, selectedText, message);
+}
+
+/**
+ * Show floating popup with 3 feature icons
+ */
+function showFloatingPopup(range, selectedText) {
+  hideFloatingPopup();
+
+  try {
+    const positionData = getPopupPosition(range);
+    if (!positionData) return;
+
+    const { rect, scrollX, scrollY } = positionData;
+    let left = rect.left + scrollX - 5;
+    let top = rect.top + scrollY - CONFIG.ICON_SIZE - 8;
+
+    const totalWidth = (CONFIG.ICON_SIZE * 3) + (CONFIG.ICON_GAP * 2);
+    const adjusted = adjustPosition(left, top, totalWidth, CONFIG.ICON_SIZE, positionData);
+    left = adjusted.left;
+    top = adjusted.top;
+
+    // Create rewrite icon
+    state.floatingPopup = document.createElement('button');
+    state.floatingPopup.id = 'prompt-rewriter-popup';
+    state.floatingPopup.className = 'pr-icon-btn';
+    state.floatingPopup.innerHTML = '<span class="pr-icon-emoji">✨</span><span class="pr-tooltip">Refine Prompt</span>';
+    state.floatingPopup.style.left = `${Math.round(left)}px`;
+    state.floatingPopup.style.top = `${Math.round(top)}px`;
+
+    // Create grammar icon
+    state.grammarPopup = document.createElement('button');
+    state.grammarPopup.id = 'prompt-grammar-popup';
+    state.grammarPopup.className = 'pr-icon-btn pr-grammar-btn';
+    state.grammarPopup.innerHTML = '<span class="pr-icon-emoji">✏️</span><span class="pr-tooltip">Grammarize</span>';
+    state.grammarPopup.style.left = `${Math.round(left + CONFIG.ICON_SIZE + CONFIG.ICON_GAP)}px`;
+    state.grammarPopup.style.top = `${Math.round(top)}px`;
+
+    // Create email icon
+    state.emailPopup = document.createElement('button');
+    state.emailPopup.id = 'prompt-email-popup';
+    state.emailPopup.className = 'pr-icon-btn pr-email-btn';
+    state.emailPopup.innerHTML = '<span class="pr-icon-emoji">📧</span><span class="pr-tooltip">Format Email</span>';
+    state.emailPopup.style.left = `${Math.round(left + (CONFIG.ICON_SIZE * 2) + (CONFIG.ICON_GAP * 2))}px`;
+    state.emailPopup.style.top = `${Math.round(top)}px`;
+
+    document.body.appendChild(state.floatingPopup);
+    document.body.appendChild(state.grammarPopup);
+    document.body.appendChild(state.emailPopup);
+
+    // Add event listeners
+    state.floatingPopup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      rewriteSelectedText(selectedText, range);
+    });
+
+    state.grammarPopup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      grammarizeSelectedText(selectedText, range);
+    });
+
+    state.emailPopup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      formatEmailSelectedText(selectedText, range);
+    });
+
+    // Setup click outside handler
+    setTimeout(() => {
+      const handleClick = (e) => {
+        if ((state.floatingPopup && !state.floatingPopup.contains(e.target)) &&
+          (state.grammarPopup && !state.grammarPopup.contains(e.target)) &&
+          (state.emailPopup && !state.emailPopup.contains(e.target))) {
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < CONFIG.MIN_SELECTION_LENGTH) {
+            hideFloatingPopup();
+            document.removeEventListener('click', handleClick, true);
+            document.removeEventListener('mousedown', handleClick, true);
+          }
+        }
+      };
+      document.addEventListener('click', handleClick, true);
+      document.addEventListener('mousedown', handleClick, true);
+    }, 50);
+  } catch (error) {
+    logError('showFloatingPopup', error);
+  }
+}
+
+/**
+ * Hide all floating popups
+ */
+function hideFloatingPopup() {
+  if (state.floatingPopup) {
+    state.floatingPopup.remove();
+    state.floatingPopup = null;
+  }
+  if (state.grammarPopup) {
+    state.grammarPopup.remove();
+    state.grammarPopup = null;
+  }
+  if (state.emailPopup) {
+    state.emailPopup.remove();
+    state.emailPopup = null;
+  }
+  if (state.loginPopup) {
+    state.loginPopup.remove();
+    state.loginPopup = null;
+  }
+}
+
+// ============================================================================
+// API REQUESTS
+// ============================================================================
+
+/**
+ * Make API request with authentication
+ */
+async function makeAuthenticatedRequest(endpoint, body) {
+  if (!state.authToken) {
+    const authStatus = await checkAuthStatus();
+    if (!authStatus.authenticated) {
+      throw new Error('Not authenticated');
+    }
+  }
+
+  const serverUrl = await getServerUrl();
+  
+  const response = await fetch(`${serverUrl}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.authToken}`,
+    },
+    body: JSON.stringify({ ...body, token: state.authToken }),
+  });
+
+  return response;
+}
+
+/**
+ * Handle API response errors
+ */
+async function handleApiError(response, range, selectedText, processingFlag) {
+  const errorData = await response.json().catch(() => ({}));
+
+  // Handle usage limit exceeded (403)
+  if (response.status === 403 && errorData.requiresSubscription) {
+    hideFloatingPopup();
+    showSubscriptionRequired(range, selectedText, errorData.message || 'Free trial exhausted. Please subscribe to continue.');
+    state[processingFlag] = false;
+    return true;
+  }
+
+  // Handle authentication errors (401)
+  if (response.status === 401) {
+    await deleteToken();
+    state.authToken = null;
+    state.isAuthenticated = false;
+    hideFloatingPopup();
+    showLoginButton(range, selectedText);
+    state[processingFlag] = false;
+    return true;
+  }
+
+  throw new Error(errorData.error || `Server error: ${response.status}`);
+}
+
+/**
+ * Show loading state on popup
+ */
+function showLoadingState(popup) {
+  if (popup) {
+    popup.innerHTML = '<div class="pr-spinner-icon"></div>';
+    popup.disabled = true;
+    popup.classList.add('pr-loading');
+    popup.style.pointerEvents = 'none';
+  }
+}
+
+/**
+ * Reset popup to original state
+ */
+function resetPopupState(popup, emoji, tooltip) {
+  if (popup) {
+    popup.innerHTML = `<span class="pr-icon-emoji">${emoji}</span><span class="pr-tooltip">${tooltip}</span>`;
+    popup.disabled = false;
+    popup.classList.remove('pr-loading');
+    popup.style.pointerEvents = 'auto';
+  }
+}
+
+// ============================================================================
+// TEXT TRANSFORMATION FUNCTIONS
+// ============================================================================
+
+/**
+ * Rewrite selected text
+ */
+async function rewriteSelectedText(selectedText, range) {
+  state.isProcessingRewrite = true;
+
+  try {
+    showLoadingState(state.floatingPopup);
+
+    const response = await makeAuthenticatedRequest('/api/rewrite-prompt', {
+      prompt: selectedText,
+      format: 'default',
+    });
+
+    if (!response.ok) {
+      const handled = await handleApiError(response, range, selectedText, 'isProcessingRewrite');
+      if (handled) return;
+    }
+
+    const data = await response.json();
+    replaceSelectedText(range, selectedText, data.rewrittenPrompt);
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    hideFloatingPopup();
+    showSuccessIndicator();
+  } catch (error) {
+    logError('rewriteSelectedText', error);
+    showErrorIndicator(error.message);
+    resetPopupState(state.floatingPopup, '✨', 'Refine Prompt');
+  } finally {
+    state.isProcessingRewrite = false;
+  }
+}
+
+/**
+ * Grammarize selected text
+ */
+async function grammarizeSelectedText(selectedText, range) {
+  state.isProcessingGrammar = true;
+
+  try {
+    showLoadingState(state.grammarPopup);
+
+    const response = await makeAuthenticatedRequest('/api/grammarize', {
+      text: selectedText,
+    });
+
+    if (!response.ok) {
+      const handled = await handleApiError(response, range, selectedText, 'isProcessingGrammar');
+      if (handled) return;
+    }
+
+    const data = await response.json();
+    replaceSelectedText(range, selectedText, data.grammarizedText);
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    hideFloatingPopup();
+    showSuccessIndicator();
+  } catch (error) {
+    logError('grammarizeSelectedText', error);
+    showErrorIndicator(error.message);
+    resetPopupState(state.grammarPopup, '✏️', 'Grammarize');
+  } finally {
+    state.isProcessingGrammar = false;
+  }
+}
+
+/**
+ * Format email from selected text
+ */
+async function formatEmailSelectedText(selectedText, range) {
+  state.isProcessingEmail = true;
+
+  try {
+    showLoadingState(state.emailPopup);
+
+    const response = await makeAuthenticatedRequest('/api/format-email', {
+      text: selectedText,
+    });
+
+    if (!response.ok) {
+      const handled = await handleApiError(response, range, selectedText, 'isProcessingEmail');
+      if (handled) return;
+    }
+
+    const data = await response.json();
+    replaceSelectedText(range, selectedText, data.formattedEmail, true);
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    hideFloatingPopup();
+    showSuccessIndicator();
+  } catch (error) {
+    logError('formatEmailSelectedText', error);
+    showErrorIndicator(error.message);
+    resetPopupState(state.emailPopup, '📧', 'Format Email');
+  } finally {
+    state.isProcessingEmail = false;
+  }
+}
+
+/**
+ * Replace selected text in DOM
+ */
+function replaceSelectedText(range, originalText, rewrittenText, preserveFormatting = false) {
+  try {
+    range.deleteContents();
+
+    if (preserveFormatting) {
+      const formattedText = rewrittenText.replace(/\n/g, '<br>');
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = formattedText;
+
+      const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+        ? range.commonAncestorContainer.parentElement
+        : range.commonAncestorContainer;
+
+      if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true' || parent.isContentEditable)) {
+        const fragment = document.createDocumentFragment();
+        while (tempDiv.firstChild) {
+          fragment.appendChild(tempDiv.firstChild);
+        }
+        range.insertNode(fragment);
+      } else {
+        const textNode = document.createTextNode(rewrittenText);
+        const span = document.createElement('span');
+        span.style.whiteSpace = 'pre-line';
+        span.appendChild(textNode);
+        range.insertNode(span);
+      }
+    } else {
+      const textNode = document.createTextNode(rewrittenText);
+      range.insertNode(textNode);
+    }
+
+    window.getSelection().removeAllRanges();
+  } catch (error) {
+    logError('replaceSelectedText', error);
+    
+    // Fallback replacement
+    try {
+      const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+        ? range.commonAncestorContainer.parentElement
+        : range.commonAncestorContainer;
+
+      if (parent) {
+        const text = parent.textContent || parent.innerText || '';
+        if (text.includes(originalText)) {
+          if (preserveFormatting && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true')) {
+            const formattedText = rewrittenText.replace(/\n/g, '<br>');
+            parent.innerHTML = text.replace(originalText, formattedText);
+          } else if (preserveFormatting) {
+            const span = document.createElement('span');
+            span.style.whiteSpace = 'pre-line';
+            span.textContent = rewrittenText;
+            const textToReplace = parent.textContent || parent.innerText || '';
+            if (textToReplace.includes(originalText)) {
+              parent.innerHTML = textToReplace.replace(originalText, span.outerHTML);
+            }
+          } else {
+            if (parent.textContent !== undefined) {
+              parent.textContent = text.replace(originalText, rewrittenText);
+            } else {
+              parent.innerText = text.replace(originalText, rewrittenText);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logError('replaceSelectedText fallback', e);
+    }
+  }
+}
+
+// ============================================================================
+// UI FEEDBACK
+// ============================================================================
+
+/**
+ * Show success indicator
+ */
+function showSuccessIndicator() {
+  const indicator = document.createElement('div');
+  indicator.className = 'pr-success-indicator';
+  indicator.textContent = '✓ Success!';
+  document.body.appendChild(indicator);
+
+  setTimeout(() => {
+    indicator.style.opacity = '0';
+    setTimeout(() => indicator.remove(), 300);
+  }, 2000);
+}
+
+/**
+ * Show error indicator
+ */
+function showErrorIndicator(message) {
+  const indicator = document.createElement('div');
+  indicator.className = 'pr-error-indicator';
+  indicator.textContent = `✗ ${message}`;
+  document.body.appendChild(indicator);
+
+  setTimeout(() => {
+    indicator.style.opacity = '0';
+    setTimeout(() => indicator.remove(), 300);
+  }, 3000);
+}
+
+// ============================================================================
+// NAVIGATION
+// ============================================================================
+
+/**
+ * Redirect to login page
  */
 async function redirectToLogin() {
   try {
     const loginUrl = await getLoginUrl();
     window.open(loginUrl, '_blank');
   } catch (error) {
-    console.error('Error redirecting to login:', error);
+    logError('redirectToLogin', error);
   }
 }
 
@@ -932,894 +1490,115 @@ async function redirectToPricing() {
     const pricingUrl = await getPricingUrl();
     window.open(pricingUrl, '_blank');
   } catch (error) {
-    console.error('Error redirecting to pricing:', error);
+    logError('redirectToPricing', error);
   }
 }
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
 
 /**
- * Show login button instead of feature icons
+ * Initialize content script
  */
-function showLoginButton(range, selectedText) {
-  hideFloatingPopup();
-  
-  try {
-    // Get the position of the first character/word in the selection
-    const firstCharRange = range.cloneRange();
-    firstCharRange.collapse(true);
-    
-    let firstCharRect;
+function init() {
+  // Add event listeners
+  document.addEventListener('mouseup', handleMouseUp);
+  document.addEventListener('selectionchange', handleSelectionChange);
+  window.addEventListener('promptRewriterAuth', handleAuthToken);
+  window.addEventListener('promptRewriterLogout', handleLogout);
+
+  // Setup storage change listener
+  if (isExtensionContextValid()) {
     try {
-      const testRange = range.cloneRange();
-      testRange.collapse(true);
-      testRange.setEnd(testRange.startContainer, Math.min(testRange.startOffset + 1, testRange.startContainer.textContent?.length || 1));
-      firstCharRect = testRange.getBoundingClientRect();
-    } catch (e) {
-      firstCharRect = range.getBoundingClientRect();
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      const startContainer = range.startContainer;
-      if (startContainer.nodeType === Node.TEXT_NODE) {
-        const textNode = startContainer;
-        const tempRange = document.createRange();
-        tempRange.setStart(textNode, range.startOffset);
-        tempRange.setEnd(textNode, Math.min(range.startOffset + 1, textNode.textContent.length));
-        firstCharRect = tempRange.getBoundingClientRect();
-      } else {
-        firstCharRect = range.getBoundingClientRect();
-      }
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      return;
-    }
-    
-    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-    
-    const iconSize = 40;
-    let left = firstCharRect.left + scrollX - 5;
-    let top = firstCharRect.top + scrollY - iconSize - 8;
-    
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const minMargin = 10;
-    
-    // Create login button
-    loginPopup = document.createElement('button');
-    loginPopup.id = 'prompt-login-popup';
-    loginPopup.className = 'pr-icon-btn pr-login-btn';
-    loginPopup.innerHTML = '<span class="pr-icon-emoji">🔐</span><span class="pr-tooltip">Login Required</span>';
-    
-    loginPopup.style.left = `${Math.round(left)}px`;
-    loginPopup.style.top = `${Math.round(top)}px`;
-    
-    // Adjust if button goes outside viewport
-    if (left + iconSize > scrollX + viewportWidth - minMargin) {
-      left = scrollX + viewportWidth - iconSize - minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (left < scrollX + minMargin) {
-      left = scrollX + minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (top < scrollY + minMargin) {
-      top = firstCharRect.bottom + scrollY + 8;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    if (top + iconSize > scrollY + viewportHeight - minMargin) {
-      top = scrollY + viewportHeight - iconSize - minMargin;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    document.body.appendChild(loginPopup);
-    
-    loginPopup.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await redirectToLogin();
-    });
-    
-    setTimeout(() => {
-      const handleClick = (e) => {
-        if (loginPopup && !loginPopup.contains(e.target)) {
-          const sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < 5) {
-            hideFloatingPopup();
-            document.removeEventListener('click', handleClick, true);
-            document.removeEventListener('mousedown', handleClick, true);
-          }
-        }
-      };
-      document.addEventListener('click', handleClick, true);
-      document.addEventListener('mousedown', handleClick, true);
-    }, 50);
-    
-  } catch (error) {
-    console.error('Error showing login button:', error);
-  }
-}
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (!isExtensionContextValid()) return;
 
-/**
- * Show purchase icon when user is logged in but trial exhausted and not subscribed
- * This is shown when user selects text (before trying to use a feature)
- */
-function showPurchaseIcon(range, selectedText, message = 'Free trial exhausted. Please subscribe to continue.') {
-  hideFloatingPopup();
-  
-  try {
-    // Get the position of the first character/word in the selection
-    const firstCharRange = range.cloneRange();
-    firstCharRange.collapse(true);
-    
-    let firstCharRect;
-    try {
-      const testRange = range.cloneRange();
-      testRange.collapse(true);
-      testRange.setEnd(testRange.startContainer, Math.min(testRange.startOffset + 1, testRange.startContainer.textContent?.length || 1));
-      firstCharRect = testRange.getBoundingClientRect();
-    } catch (e) {
-      firstCharRect = range.getBoundingClientRect();
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      const startContainer = range.startContainer;
-      if (startContainer.nodeType === Node.TEXT_NODE) {
-        const textNode = startContainer;
-        const tempRange = document.createRange();
-        tempRange.setStart(textNode, range.startOffset);
-        tempRange.setEnd(textNode, Math.min(range.startOffset + 1, textNode.textContent.length));
-        firstCharRect = tempRange.getBoundingClientRect();
-      } else {
-        firstCharRect = range.getBoundingClientRect();
-      }
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      return;
-    }
-    
-    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-    
-    const iconSize = 40;
-    let left = firstCharRect.left + scrollX - 5;
-    let top = firstCharRect.top + scrollY - iconSize - 8;
-    
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const minMargin = 10;
-    
-    // Create purchase button
-    loginPopup = document.createElement('button');
-    loginPopup.id = 'prompt-purchase-popup';
-    loginPopup.className = 'pr-icon-btn pr-subscription-btn';
-    loginPopup.innerHTML = `<span class="pr-icon-emoji">💳</span><span class="pr-tooltip">${message}</span>`;
-    
-    loginPopup.style.left = `${Math.round(left)}px`;
-    loginPopup.style.top = `${Math.round(top)}px`;
-    
-    // Adjust if button goes outside viewport
-    if (left + iconSize > scrollX + viewportWidth - minMargin) {
-      left = scrollX + viewportWidth - iconSize - minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (left < scrollX + minMargin) {
-      left = scrollX + minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (top < scrollY + minMargin) {
-      top = firstCharRect.bottom + scrollY + 8;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    if (top + iconSize > scrollY + viewportHeight - minMargin) {
-      top = scrollY + viewportHeight - iconSize - minMargin;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    document.body.appendChild(loginPopup);
-    
-    loginPopup.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await redirectToPricing();
-    });
-    
-    setTimeout(() => {
-      const handleClick = (e) => {
-        if (loginPopup && !loginPopup.contains(e.target)) {
-          const sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < 5) {
-            hideFloatingPopup();
-            document.removeEventListener('click', handleClick, true);
-            document.removeEventListener('mousedown', handleClick, true);
-          }
-        }
-      };
-      document.addEventListener('click', handleClick, true);
-      document.addEventListener('mousedown', handleClick, true);
-    }, 50);
-    
-  } catch (error) {
-    console.error('Error showing purchase icon:', error);
-  }
-}
+        if (areaName === 'sync' && changes.authToken) {
+          const newToken = changes.authToken.newValue;
 
-/**
- * Show subscription required button when free trial is exhausted
- * (This is called when user tries to use a feature and gets 403 error)
- */
-function showSubscriptionRequired(range, selectedText, message) {
-  hideFloatingPopup();
-  
-  try {
-    // Get the position of the first character/word in the selection
-    const firstCharRange = range.cloneRange();
-    firstCharRange.collapse(true);
-    
-    let firstCharRect;
-    try {
-      const testRange = range.cloneRange();
-      testRange.collapse(true);
-      testRange.setEnd(testRange.startContainer, Math.min(testRange.startOffset + 1, testRange.startContainer.textContent?.length || 1));
-      firstCharRect = testRange.getBoundingClientRect();
-    } catch (e) {
-      firstCharRect = range.getBoundingClientRect();
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      const startContainer = range.startContainer;
-      if (startContainer.nodeType === Node.TEXT_NODE) {
-        const textNode = startContainer;
-        const tempRange = document.createRange();
-        tempRange.setStart(textNode, range.startOffset);
-        tempRange.setEnd(textNode, Math.min(range.startOffset + 1, textNode.textContent.length));
-        firstCharRect = tempRange.getBoundingClientRect();
-      } else {
-        firstCharRect = range.getBoundingClientRect();
-      }
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      return;
-    }
-    
-    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-    
-    const iconSize = 40;
-    let left = firstCharRect.left + scrollX - 5;
-    let top = firstCharRect.top + scrollY - iconSize - 8;
-    
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const minMargin = 10;
-    
-    // Create subscription required button
-    loginPopup = document.createElement('button');
-    loginPopup.id = 'prompt-subscription-popup';
-    loginPopup.className = 'pr-icon-btn pr-subscription-btn';
-    loginPopup.innerHTML = '<span class="pr-icon-emoji">💳</span><span class="pr-tooltip">Subscribe Required</span>';
-    
-    loginPopup.style.left = `${Math.round(left)}px`;
-    loginPopup.style.top = `${Math.round(top)}px`;
-    
-    // Adjust if button goes outside viewport
-    if (left + iconSize > scrollX + viewportWidth - minMargin) {
-      left = scrollX + viewportWidth - iconSize - minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (left < scrollX + minMargin) {
-      left = scrollX + minMargin;
-      loginPopup.style.left = `${Math.round(left)}px`;
-    }
-    
-    if (top < scrollY + minMargin) {
-      top = firstCharRect.bottom + scrollY + 8;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    if (top + iconSize > scrollY + viewportHeight - minMargin) {
-      top = scrollY + viewportHeight - iconSize - minMargin;
-      loginPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    document.body.appendChild(loginPopup);
-    
-    loginPopup.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await redirectToPricing();
-    });
-    
-    setTimeout(() => {
-      const handleClick = (e) => {
-        if (loginPopup && !loginPopup.contains(e.target)) {
-          const sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < 5) {
-            hideFloatingPopup();
-            document.removeEventListener('click', handleClick, true);
-            document.removeEventListener('mousedown', handleClick, true);
-          }
-        }
-      };
-      document.addEventListener('click', handleClick, true);
-      document.addEventListener('mousedown', handleClick, true);
-    }, 50);
-    
-  } catch (error) {
-    console.error('Error showing subscription required button:', error);
-  }
-}
-
-function showFloatingPopup(range, selectedText) {
-  hideFloatingPopup();
-  
-  try {
-    // Get the position of the first character/word in the selection
-    const firstCharRange = range.cloneRange();
-    firstCharRange.collapse(true); // Collapse to start
-    
-    // Try to get the bounding rect of the first character
-    let firstCharRect;
-    try {
-      // Create a range for just the first character
-      const testRange = range.cloneRange();
-      testRange.collapse(true);
-      testRange.setEnd(testRange.startContainer, Math.min(testRange.startOffset + 1, testRange.startContainer.textContent?.length || 1));
-      firstCharRect = testRange.getBoundingClientRect();
-    } catch (e) {
-      // Fallback to the start position
-      firstCharRect = range.getBoundingClientRect();
-    }
-    
-    // If we can't get first char rect, use the start container position
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      // Try to get position from start container
-      const startContainer = range.startContainer;
-      if (startContainer.nodeType === Node.TEXT_NODE) {
-        const textNode = startContainer;
-        const tempRange = document.createRange();
-        tempRange.setStart(textNode, range.startOffset);
-        tempRange.setEnd(textNode, Math.min(range.startOffset + 1, textNode.textContent.length));
-        firstCharRect = tempRange.getBoundingClientRect();
-      } else {
-        firstCharRect = range.getBoundingClientRect();
-      }
-    }
-    
-    if (!firstCharRect || (firstCharRect.width === 0 && firstCharRect.height === 0)) {
-      return;
-    }
-    
-    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-    
-    const iconSize = 40;
-    const iconGap = 8;
-    
-    // Position at the top beginning of the first character
-    let left = firstCharRect.left + scrollX - 5; // Slightly to the left of first char
-    let top = firstCharRect.top + scrollY - iconSize - 8; // Above the first line
-    
-    // Keep within viewport horizontally
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const minMargin = 10;
-    
-    // Create rewrite icon with tooltip
-    floatingPopup = document.createElement('button');
-    floatingPopup.id = 'prompt-rewriter-popup';
-    floatingPopup.className = 'pr-icon-btn';
-    floatingPopup.innerHTML = '<span class="pr-icon-emoji">✨</span><span class="pr-tooltip">Refine Prompt</span>';
-    
-    floatingPopup.style.left = `${Math.round(left)}px`;
-    floatingPopup.style.top = `${Math.round(top)}px`;
-    
-    // Create grammar icon with tooltip (positioned next to rewrite icon)
-    grammarPopup = document.createElement('button');
-    grammarPopup.id = 'prompt-grammar-popup';
-    grammarPopup.className = 'pr-icon-btn pr-grammar-btn';
-    grammarPopup.innerHTML = '<span class="pr-icon-emoji">✏️</span><span class="pr-tooltip">Grammarize</span>';
-    
-    grammarPopup.style.left = `${Math.round(left + iconSize + iconGap)}px`;
-    grammarPopup.style.top = `${Math.round(top)}px`;
-    
-    // Create email icon with tooltip (positioned next to grammar icon)
-    emailPopup = document.createElement('button');
-    emailPopup.id = 'prompt-email-popup';
-    emailPopup.className = 'pr-icon-btn pr-email-btn';
-    emailPopup.innerHTML = '<span class="pr-icon-emoji">📧</span><span class="pr-tooltip">Format Email</span>';
-    
-    emailPopup.style.left = `${Math.round(left + (iconSize * 2) + (iconGap * 2))}px`;
-    emailPopup.style.top = `${Math.round(top)}px`;
-    
-    // Adjust if icons go outside viewport
-    const totalWidth = (iconSize * 3) + (iconGap * 2);
-    if (left + totalWidth > scrollX + viewportWidth - minMargin) {
-      left = scrollX + viewportWidth - totalWidth - minMargin;
-      floatingPopup.style.left = `${Math.round(left)}px`;
-      grammarPopup.style.left = `${Math.round(left + iconSize + iconGap)}px`;
-      emailPopup.style.left = `${Math.round(left + (iconSize * 2) + (iconGap * 2))}px`;
-    }
-    
-    if (left < scrollX + minMargin) {
-      left = scrollX + minMargin;
-      floatingPopup.style.left = `${Math.round(left)}px`;
-      grammarPopup.style.left = `${Math.round(left + iconSize + iconGap)}px`;
-      emailPopup.style.left = `${Math.round(left + (iconSize * 2) + (iconGap * 2))}px`;
-    }
-    
-    // If not enough space above, show below
-    if (top < scrollY + minMargin) {
-      top = firstCharRect.bottom + scrollY + 8;
-      floatingPopup.style.top = `${Math.round(top)}px`;
-      grammarPopup.style.top = `${Math.round(top)}px`;
-      emailPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    // Ensure it's within viewport vertically
-    if (top + iconSize > scrollY + viewportHeight - minMargin) {
-      top = scrollY + viewportHeight - iconSize - minMargin;
-      floatingPopup.style.top = `${Math.round(top)}px`;
-      grammarPopup.style.top = `${Math.round(top)}px`;
-      emailPopup.style.top = `${Math.round(top)}px`;
-    }
-    
-    document.body.appendChild(floatingPopup);
-    document.body.appendChild(grammarPopup);
-    document.body.appendChild(emailPopup);
-    
-    floatingPopup.addEventListener('click', (e) => {
-      e.stopPropagation();
-      rewriteSelectedText(selectedText, range);
-    });
-    
-    grammarPopup.addEventListener('click', (e) => {
-      e.stopPropagation();
-      grammarizeSelectedText(selectedText, range);
-    });
-    
-    emailPopup.addEventListener('click', (e) => {
-      e.stopPropagation();
-      formatEmailSelectedText(selectedText, range);
-    });
-    
-    setTimeout(() => {
-      const handleClick = (e) => {
-        if ((floatingPopup && !floatingPopup.contains(e.target)) && 
-            (grammarPopup && !grammarPopup.contains(e.target)) &&
-            (emailPopup && !emailPopup.contains(e.target))) {
-          const sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < 5) {
-            hideFloatingPopup();
-            document.removeEventListener('click', handleClick, true);
-            document.removeEventListener('mousedown', handleClick, true);
-          }
-        }
-      };
-      document.addEventListener('click', handleClick, true);
-      document.addEventListener('mousedown', handleClick, true);
-    }, 50);
-    
-  } catch (error) {
-    console.error('Error showing popup:', error);
-  }
-}
-
-function hideFloatingPopup() {
-  if (floatingPopup) {
-    floatingPopup.remove();
-    floatingPopup = null;
-  }
-  if (grammarPopup) {
-    grammarPopup.remove();
-    grammarPopup = null;
-  }
-  if (emailPopup) {
-    emailPopup.remove();
-    emailPopup = null;
-  }
-  if (loginPopup) {
-    loginPopup.remove();
-    loginPopup = null;
-  }
-}
-
-async function rewriteSelectedText(selectedText, range) {
-  // Set flag to prevent popup from being recreated during processing
-  isProcessingRewrite = true;
-  
-  try {
-    // Validate token before making request
-    if (!authToken) {
-      const authenticated = await checkAuthStatus();
-      if (!authenticated) {
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingRewrite = false;
-        return;
-      }
-    }
-    
-    // Get server URL
-    const serverUrl = await getServerUrl();
-    
-    // Show loading icon when request starts
-    if (floatingPopup) {
-      floatingPopup.innerHTML = '<div class="pr-spinner-icon"></div>';
-      floatingPopup.disabled = true;
-      floatingPopup.classList.add('pr-loading');
-      floatingPopup.style.pointerEvents = 'none';
-    }
-    
-    // Send request to backend with token
-    const response = await fetch(`${serverUrl}/api/rewrite-prompt`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ 
-        prompt: selectedText, 
-        format: 'default',
-        token: authToken
-      }),
-    });
-    
-    // Loading continues until response is received
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      
-      // Handle usage limit exceeded (403)
-      if (response.status === 403 && errorData.requiresSubscription) {
-        hideFloatingPopup();
-        showSubscriptionRequired(range, selectedText, errorData.message || 'Free trial exhausted. Please subscribe to continue.');
-        isProcessingRewrite = false;
-        return;
-      }
-      
-      // Handle authentication errors (401)
-      if (response.status === 401) {
-        await deleteToken();
-        authToken = null;
-        isAuthenticated = false;
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingRewrite = false;
-        return;
-      }
-      
-      throw new Error(errorData.error || `Server error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const rewrittenText = data.rewrittenPrompt;
-    
-    // Replace text while loading is still showing
-    replaceSelectedText(range, selectedText, rewrittenText);
-    
-    // Keep loading visible for a moment to ensure replacement is complete
-    await new Promise(resolve => setTimeout(resolve, 200));
-    
-    // Now hide popup and show success - loading ends here
-    hideFloatingPopup();
-    showSuccessIndicator();
-    
-  } catch (error) {
-    console.error('Error rewriting prompt:', error);
-    showErrorIndicator(error.message);
-    
-    // Reset to prompt icon on error
-    if (floatingPopup) {
-      floatingPopup.innerHTML = '<span class="pr-icon-emoji">✨</span><span class="pr-tooltip">Refine Prompt</span>';
-      floatingPopup.disabled = false;
-      floatingPopup.classList.remove('pr-loading');
-      floatingPopup.style.pointerEvents = 'auto';
-    }
-  } finally {
-    // Reset flag after processing is complete
-    isProcessingRewrite = false;
-  }
-}
-
-async function grammarizeSelectedText(selectedText, range) {
-  // Set flag to prevent popup from being recreated during processing
-  isProcessingGrammar = true;
-  
-  try {
-    // Validate token before making request
-    if (!authToken) {
-      const authenticated = await checkAuthStatus();
-      if (!authenticated) {
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingGrammar = false;
-        return;
-      }
-    }
-    
-    // Get server URL
-    const serverUrl = await getServerUrl();
-    
-    // Show loading icon when request starts
-    if (grammarPopup) {
-      grammarPopup.innerHTML = '<div class="pr-spinner-icon"></div>';
-      grammarPopup.disabled = true;
-      grammarPopup.classList.add('pr-loading');
-      grammarPopup.style.pointerEvents = 'none';
-    }
-    
-    // Send request to backend with token
-    const response = await fetch(`${serverUrl}/api/grammarize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ 
-        text: selectedText,
-        token: authToken
-      }),
-    });
-    
-    // Loading continues until response is received
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      // If unauthorized, token is invalid
-      if (response.status === 401) {
-        await deleteToken();
-        authToken = null;
-        isAuthenticated = false;
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingGrammar = false;
-        return;
-      }
-      throw new Error(errorData.error || `Server error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const grammarizedText = data.grammarizedText;
-    
-    // Replace text while loading is still showing
-    replaceSelectedText(range, selectedText, grammarizedText);
-    
-    // Keep loading visible for a moment to ensure replacement is complete
-    await new Promise(resolve => setTimeout(resolve, 200));
-    
-    // Now hide popup and show success - loading ends here
-    hideFloatingPopup();
-    showSuccessIndicator();
-    
-  } catch (error) {
-    console.error('Error grammarizing text:', error);
-    showErrorIndicator(error.message);
-    
-    // Reset to grammar icon on error
-    if (grammarPopup) {
-      grammarPopup.innerHTML = '<span class="pr-icon-emoji">✏️</span><span class="pr-tooltip">Grammarize</span>';
-      grammarPopup.disabled = false;
-      grammarPopup.classList.remove('pr-loading');
-      grammarPopup.style.pointerEvents = 'auto';
-    }
-  } finally {
-    // Reset flag after processing is complete
-    isProcessingGrammar = false;
-  }
-}
-
-async function formatEmailSelectedText(selectedText, range) {
-  // Set flag to prevent popup from being recreated during processing
-  isProcessingEmail = true;
-  
-  try {
-    // Validate token before making request
-    if (!authToken) {
-      const authenticated = await checkAuthStatus();
-      if (!authenticated) {
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingEmail = false;
-        return;
-      }
-    }
-    
-    // Get server URL
-    const serverUrl = await getServerUrl();
-    
-    // Show loading icon when request starts
-    if (emailPopup) {
-      emailPopup.innerHTML = '<div class="pr-spinner-icon"></div>';
-      emailPopup.disabled = true;
-      emailPopup.classList.add('pr-loading');
-      emailPopup.style.pointerEvents = 'none';
-    }
-    
-    // Send request to backend with token
-    const response = await fetch(`${serverUrl}/api/format-email`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ 
-        text: selectedText,
-        token: authToken
-      }),
-    });
-    
-    // Loading continues until response is received
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      
-      // Handle usage limit exceeded (403)
-      if (response.status === 403 && errorData.requiresSubscription) {
-        hideFloatingPopup();
-        showSubscriptionRequired(range, selectedText, errorData.message || 'Free trial exhausted. Please subscribe to continue.');
-        isProcessingEmail = false;
-        return;
-      }
-      
-      // Handle authentication errors (401)
-      if (response.status === 401) {
-        await deleteToken();
-        authToken = null;
-        isAuthenticated = false;
-        hideFloatingPopup();
-        showLoginButton(range, selectedText);
-        isProcessingEmail = false;
-        return;
-      }
-      
-      throw new Error(errorData.error || `Server error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const formattedEmail = data.formattedEmail;
-    
-    // Replace text while loading is still showing (preserve formatting for email)
-    replaceSelectedText(range, selectedText, formattedEmail, true);
-    
-    // Keep loading visible for a moment to ensure replacement is complete
-    await new Promise(resolve => setTimeout(resolve, 200));
-    
-    // Now hide popup and show success - loading ends here
-    hideFloatingPopup();
-    showSuccessIndicator();
-    
-  } catch (error) {
-    console.error('Error formatting email:', error);
-    showErrorIndicator(error.message);
-    
-    // Reset to email icon on error
-    if (emailPopup) {
-      emailPopup.innerHTML = '<span class="pr-icon-emoji">📧</span><span class="pr-tooltip">Format Email</span>';
-      emailPopup.disabled = false;
-      emailPopup.classList.remove('pr-loading');
-      emailPopup.style.pointerEvents = 'auto';
-    }
-  } finally {
-    // Reset flag after processing is complete
-    isProcessingEmail = false;
-  }
-}
-
-function replaceSelectedText(range, originalText, rewrittenText, preserveFormatting = false) {
-  try {
-    range.deleteContents();
-    
-    // If we need to preserve formatting (like for emails), use innerHTML with line breaks
-    if (preserveFormatting) {
-      // Convert newlines to <br> tags for proper formatting
-      const formattedText = rewrittenText.replace(/\n/g, '<br>');
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = formattedText;
-      
-      // Try to insert as HTML if parent supports it
-      const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
-        ? range.commonAncestorContainer.parentElement
-        : range.commonAncestorContainer;
-      
-      if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true' || parent.isContentEditable)) {
-        // Use innerHTML for elements that support HTML
-        const fragment = document.createDocumentFragment();
-        while (tempDiv.firstChild) {
-          fragment.appendChild(tempDiv.firstChild);
-        }
-        range.insertNode(fragment);
-      } else {
-        // Fallback to text node with preserved line breaks using white-space
-        const textNode = document.createTextNode(rewrittenText);
-        const span = document.createElement('span');
-        span.style.whiteSpace = 'pre-line';
-        span.appendChild(textNode);
-        range.insertNode(span);
-      }
-    } else {
-      // Regular text replacement
-      const textNode = document.createTextNode(rewrittenText);
-      range.insertNode(textNode);
-    }
-    
-    window.getSelection().removeAllRanges();
-  } catch (error) {
-    console.error('Error replacing text:', error);
-    try {
-      const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
-        ? range.commonAncestorContainer.parentElement
-        : range.commonAncestorContainer;
-      
-      if (parent) {
-        const text = parent.textContent || parent.innerText || '';
-        if (text.includes(originalText)) {
-          let newText = rewrittenText;
-          
-          // If preserving formatting and parent supports HTML
-          if (preserveFormatting && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true')) {
-            const formattedText = rewrittenText.replace(/\n/g, '<br>');
-            parent.innerHTML = text.replace(originalText, formattedText);
-          } else if (preserveFormatting) {
-            // Use white-space pre-line to preserve line breaks
-            const span = document.createElement('span');
-            span.style.whiteSpace = 'pre-line';
-            span.textContent = rewrittenText;
-            const textToReplace = parent.textContent || parent.innerText || '';
-            if (textToReplace.includes(originalText)) {
-              parent.innerHTML = textToReplace.replace(originalText, span.outerHTML);
-            }
+          if (newToken && newToken.token) {
+            checkAuthStatus().then((status) => {
+              if (status.authenticated) {
+                state.authToken = newToken.token;
+                state.isAuthenticated = true;
+              } else {
+                state.authToken = null;
+                state.isAuthenticated = false;
+              }
+              setTimeout(() => checkSelection(), 200);
+            }).catch((err) => {
+              logError('checkAuthStatus after storage change', err);
+              // Optimistic update
+              state.authToken = newToken.token;
+              state.isAuthenticated = true;
+              setTimeout(() => checkSelection(), 200);
+            });
           } else {
-            if (parent.textContent !== undefined) {
-              parent.textContent = text.replace(originalText, newText);
-            } else {
-              parent.innerText = text.replace(originalText, newText);
-            }
+            state.authToken = null;
+            state.isAuthenticated = false;
+            hideFloatingPopup();
           }
         }
-      }
+      });
     } catch (e) {
-      console.error('Fallback failed:', e);
+      if (e.message && e.message.includes('Extension context invalidated')) {
+        state.extensionContextValid = false;
+        console.warn('Extension context invalidated, storage listener not available');
+      }
     }
   }
+
+  // Sync token from localStorage
+  syncTokenFromLocalStorage();
+
+  // Setup periodic sync (reduced frequency to avoid quota issues)
+  if (isExtensionContextValid()) {
+    state.syncInterval = setInterval(() => {
+      if (!isExtensionContextValid()) {
+        state.extensionContextValid = false;
+        if (state.syncInterval) {
+          clearInterval(state.syncInterval);
+          state.syncInterval = null;
+        }
+        return;
+      }
+      syncTokenFromLocalStorage().catch((err) => {
+        if (err && err.message && err.message.includes('Extension context invalidated')) {
+          state.extensionContextValid = false;
+          if (state.syncInterval) {
+            clearInterval(state.syncInterval);
+            state.syncInterval = null;
+          }
+        }
+      });
+    }, CONFIG.SYNC_INTERVAL);
+  }
+
+  // Initial auth check
+  checkAuthStatus().then((status) => {
+    console.log('Initial auth check on page load:', status);
+  }).catch((err) => {
+    logError('Initial auth check', err);
+  });
+
+  // Add styles
+  addStyles();
 }
 
-function showSuccessIndicator() {
-  const indicator = document.createElement('div');
-  indicator.className = 'pr-success-indicator';
-  indicator.textContent = '✓ Prompt rewritten!';
-  document.body.appendChild(indicator);
-  
-  setTimeout(() => {
-    indicator.style.opacity = '0';
-    setTimeout(() => indicator.remove(), 300);
-  }, 2000);
-}
+// ============================================================================
+// MESSAGE HANDLERS
+// ============================================================================
 
-function showErrorIndicator(message) {
-  const indicator = document.createElement('div');
-  indicator.className = 'pr-error-indicator';
-  indicator.textContent = `✗ ${message}`;
-  document.body.appendChild(indicator);
-  
-  setTimeout(() => {
-    indicator.style.opacity = '0';
-    setTimeout(() => indicator.remove(), 300);
-  }, 3000);
-}
-
+/**
+ * Handle messages from background script
+ */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'replacePrompt') {
     try {
       const textareas = document.querySelectorAll('textarea');
       const inputs = document.querySelectorAll('input[type="text"], input[type="search"]');
-      
+
       for (const textarea of textareas) {
         if (textarea.value.includes(request.originalPrompt)) {
           textarea.value = request.rewrittenPrompt;
@@ -1830,7 +1609,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return true;
         }
       }
-      
+
       for (const input of inputs) {
         if (input.value.includes(request.originalPrompt)) {
           input.value = request.rewrittenPrompt;
@@ -1841,7 +1620,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return true;
         }
       }
-      
+
       sendResponse({ success: false });
     } catch (error) {
       sendResponse({ success: false, error: error.message });
@@ -1850,9 +1629,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+// ============================================================================
+// STYLES
+// ============================================================================
+
+/**
+ * Add CSS styles to page
+ */
 function addStyles() {
   if (document.getElementById('pr-styles')) return;
-  
+
   const style = document.createElement('style');
   style.id = 'pr-styles';
   style.textContent = `
@@ -1876,6 +1662,7 @@ function addStyles() {
       padding: 0;
       line-height: 1;
     }
+    
     .pr-tooltip {
       position: absolute;
       bottom: calc(100% + 10px);
@@ -1895,6 +1682,7 @@ function addStyles() {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     }
+    
     .pr-tooltip::after {
       content: '';
       position: absolute;
@@ -1904,56 +1692,68 @@ function addStyles() {
       border: 5px solid transparent;
       border-top-color: rgba(0, 0, 0, 0.9);
     }
+    
     .pr-icon-btn:hover .pr-tooltip {
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+    
     .pr-icon-emoji {
       display: inline-block;
       line-height: 1;
     }
-    .pr-icon-btn .pr-tooltip {
-      display: block;
-    }
+    
     .pr-icon-btn:hover {
       transform: scale(1.1);
       box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
     }
+    
     .pr-icon-btn:active {
       transform: scale(0.95);
     }
+    
     .pr-icon-btn:disabled {
       opacity: 0.7;
       cursor: not-allowed;
       transform: none;
     }
+    
     .pr-icon-btn.pr-loading {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     }
+    
     .pr-grammar-btn {
       background: linear-gradient(135deg, #10b981 0%, #059669 100%);
     }
+    
     .pr-grammar-btn:hover {
       box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
     }
+    
     .pr-email-btn {
       background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
     }
+    
     .pr-email-btn:hover {
       box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
     }
+    
     .pr-login-btn {
       background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
     }
+    
     .pr-login-btn:hover {
       box-shadow: 0 6px 16px rgba(245, 158, 11, 0.4);
     }
+    
     .pr-subscription-btn {
       background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
     }
+    
     .pr-subscription-btn:hover {
       box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
     }
+    
     .pr-spinner-icon {
       width: 20px;
       height: 20px;
@@ -1962,9 +1762,11 @@ function addStyles() {
       border-radius: 50%;
       animation: pr-spin 0.8s linear infinite;
     }
+    
     @keyframes pr-spin {
       to { transform: rotate(360deg); }
     }
+    
     .pr-success-indicator {
       position: fixed;
       top: 20px;
@@ -1981,6 +1783,7 @@ function addStyles() {
       animation: pr-slideIn 0.3s ease-out;
       transition: opacity 0.3s;
     }
+    
     .pr-error-indicator {
       position: fixed;
       top: 20px;
@@ -1998,6 +1801,7 @@ function addStyles() {
       transition: opacity 0.3s;
       max-width: 300px;
     }
+    
     @keyframes pr-slideIn {
       from {
         transform: translateX(100%);
@@ -2010,4 +1814,15 @@ function addStyles() {
     }
   `;
   document.head.appendChild(style);
+}
+
+// ============================================================================
+// BOOTSTRAP
+// ============================================================================
+
+// Wait for DOM to be ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
 }

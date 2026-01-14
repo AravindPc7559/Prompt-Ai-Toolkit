@@ -3,6 +3,7 @@
  */
 import { UsageHistory } from '../models/UsageHistory.js';
 import { User } from '../models/User.js';
+import { invalidateUserCache } from '../utils/cache.js';
 
 /**
  * Log usage to database
@@ -69,7 +70,8 @@ export const getUserUsageStats = async (userId, startDate, endDate) => {
  */
 export const checkAndUpdateSubscriptionExpiration = async (userId) => {
   try {
-    const user = await User.findById(userId);
+    const user = await User.findById(userId)
+      .select('isSubscribed subscriptionExpiresAt');
     if (!user) {
       return false;
     }
@@ -83,6 +85,10 @@ export const checkAndUpdateSubscriptionExpiration = async (userId) => {
         user.subscriptionExpiresAt = undefined;
         await user.save();
         console.log(`Subscription expired for user ${userId}`);
+        
+        // Invalidate user cache after expiration
+        invalidateUserCache(userId);
+        
         return true; // Subscription was expired and updated
       }
     }
@@ -98,7 +104,8 @@ export const checkAndUpdateSubscriptionExpiration = async (userId) => {
  */
 export const canUseService = async (userId) => {
   try {
-    const user = await User.findById(userId);
+    const user = await User.findById(userId)
+      .select('freeTrialsUsed isSubscribed subscriptionExpiresAt');
     if (!user) {
       return { allowed: false, reason: 'User not found' };
     }
@@ -107,7 +114,8 @@ export const canUseService = async (userId) => {
     await checkAndUpdateSubscriptionExpiration(userId);
     
     // Refresh user data after potential update
-    const updatedUser = await User.findById(userId);
+    const updatedUser = await User.findById(userId)
+      .select('freeTrialsUsed isSubscribed subscriptionExpiresAt');
     if (!updatedUser) {
       return { allowed: false, reason: 'User not found' };
     }
@@ -146,7 +154,8 @@ export const canUseService = async (userId) => {
  */
 export const incrementFreeTrialUsage = async (userId) => {
   try {
-    const user = await User.findById(userId);
+    const user = await User.findById(userId)
+      .select('freeTrialsUsed isSubscribed');
     if (!user) {
       return false;
     }
@@ -155,6 +164,9 @@ export const incrementFreeTrialUsage = async (userId) => {
     if (!user.isSubscribed) {
       user.freeTrialsUsed = (user.freeTrialsUsed || 0) + 1;
       await user.save();
+      
+      // Invalidate user cache after trial increment
+      invalidateUserCache(userId);
     }
 
     return true;

@@ -71,3 +71,4 @@ client/.vite/
 .parcel-cache/
 .next/
 out/
+.cursor

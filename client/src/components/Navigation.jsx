@@ -14,7 +14,13 @@ const Navigation = ({ activePage = 'dashboard' }) => {
   return (
     <nav className="app-nav">
       <div className="nav-brand">
-        <img src="/assets/pnglogo.png" alt="Prompt AI Toolkit" className="nav-logo" />
+        <img 
+          src="/assets/pnglogo.png" 
+          alt="Prompt AI Toolkit" 
+          className="nav-logo"
+          loading="lazy"
+          decoding="async"
+        />
         <h2>Prompt AI Toolkit</h2>
       </div>
       <div className="nav-links">

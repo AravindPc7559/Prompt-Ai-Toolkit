@@ -55,8 +55,9 @@ const usageHistorySchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes for faster queries
+// Compound indexes for performance
 usageHistorySchema.index({ userId: 1, createdAt: -1 });
+usageHistorySchema.index({ userId: 1, action: 1, createdAt: -1 });
 usageHistorySchema.index({ createdAt: -1 });
 
 export const UsageHistory = mongoose.model('UsageHistory', usageHistorySchema);
