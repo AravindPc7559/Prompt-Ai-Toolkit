@@ -12,6 +12,7 @@ const replaceBtn = document.getElementById('replace-btn');
 const useBtn = document.getElementById('use-btn');
 const serverUrlInput = document.getElementById('server-url');
 const saveSettingsBtn = document.getElementById('save-settings-btn');
+const userIconBtn = document.getElementById('user-icon-btn');
 
 let rewrittenPrompt = '';
 let originalPrompt = '';
@@ -154,6 +155,22 @@ saveSettingsBtn.addEventListener('click', () => {
         saveSettingsBtn.textContent = 'Save Settings';
       }, 2000);
     });
+  }
+});
+
+// User icon click - redirect to dashboard
+userIconBtn.addEventListener('click', async () => {
+  try {
+    // Get dashboard URL from config
+    chrome.storage.sync.get(['loginUrl'], (result) => {
+      const loginUrl = result.loginUrl || 'http://localhost:5173';
+      const dashboardUrl = `${loginUrl.replace(/\/+$/, '')}/dashboard`;
+      
+      // Open dashboard in a new tab
+      chrome.tabs.create({ url: dashboardUrl });
+    });
+  } catch (error) {
+    showError('Failed to open dashboard: ' + error.message);
   }
 });
 

@@ -8,6 +8,8 @@ import { Payment } from '../models/Payment.js';
 import { config } from '../config/app.js';
 import { invalidateUserCache } from '../utils/cache.js';
 
+import { PRICING, CURRENCY, LIMITS } from '../config/pricing.js';
+
 // Lazy initialization of Razorpay instance
 let razorpay = null;
 
@@ -15,11 +17,11 @@ const getRazorpayInstance = () => {
   if (!razorpay) {
     const keyId = process.env.RAZORPAY_KEY_ID;
     const keySecret = process.env.RAZORPAY_KEY_SECRET;
-    
+
     if (!keyId || !keySecret) {
       throw new Error('Razorpay credentials not configured. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in your .env file');
     }
-    
+
     razorpay = new Razorpay({
       key_id: keyId,
       key_secret: keySecret,
@@ -34,23 +36,17 @@ const getRazorpayInstance = () => {
 export const createOrder = async (req, res, next) => {
   try {
     const userId = req.user?.id;
-    const { amount, currency = 'INR', plan = 'monthly' } = req.body;
+    const { amount, currency = CURRENCY, plan = 'monthly' } = req.body;
 
     // Validate amount range (additional server-side check)
-    const MIN_AMOUNT = 1;
-    const MAX_AMOUNT = 10000;
-    if (amount < MIN_AMOUNT || amount > MAX_AMOUNT) {
+    if (amount < LIMITS.MIN_AMOUNT || amount > LIMITS.MAX_AMOUNT) {
       return res.status(400).json({
         success: false,
-        error: `Amount must be between ₹${MIN_AMOUNT} and ₹${MAX_AMOUNT}`
+        error: `Amount must be between ₹${LIMITS.MIN_AMOUNT} and ₹${LIMITS.MAX_AMOUNT}`
       });
     }
 
     // Validate amount matches plan pricing
-    const PRICING = {
-      monthly: 130
-    };
-    
     if (amount !== PRICING[plan]) {
       return res.status(400).json({
         success: false,
@@ -110,8 +106,8 @@ export const verifyPayment = async (req, res, next) => {
     }
 
     // Check if payment already exists (prevent duplicate processing)
-    const existingPayment = await Payment.findOne({ 
-      razorpayPaymentId: razorpay_payment_id 
+    const existingPayment = await Payment.findOne({
+      razorpayPaymentId: razorpay_payment_id
     });
 
     if (existingPayment) {
@@ -139,7 +135,7 @@ export const verifyPayment = async (req, res, next) => {
     // Fetch order details from Razorpay
     const razorpayInstance = getRazorpayInstance();
     const order = await razorpayInstance.orders.fetch(razorpay_order_id);
-    
+
     // Verify order belongs to this user
     if (order.notes?.userId !== userId) {
       console.error(`Order ${razorpay_order_id} does not belong to user ${userId}`);
@@ -148,10 +144,10 @@ export const verifyPayment = async (req, res, next) => {
         error: 'Order does not belong to this user'
       });
     }
-    
+
     // Fetch payment details from Razorpay to verify status
     const razorpayPayment = await razorpayInstance.payments.fetch(razorpay_payment_id);
-    
+
     // Verify payment status
     if (razorpayPayment.status !== 'captured' && razorpayPayment.status !== 'authorized') {
       return res.status(400).json({
@@ -159,7 +155,7 @@ export const verifyPayment = async (req, res, next) => {
         error: `Payment not completed. Status: ${razorpayPayment.status}`
       });
     }
-    
+
     // Verify payment order_id matches
     if (razorpayPayment.order_id !== razorpay_order_id) {
       return res.status(400).json({
@@ -167,7 +163,7 @@ export const verifyPayment = async (req, res, next) => {
         error: 'Payment does not match order'
       });
     }
-    
+
     // Update user subscription - with projection
     const user = await User.findById(userId)
       .select('email name isSubscribed subscriptionExpiresAt');
@@ -185,7 +181,7 @@ export const verifyPayment = async (req, res, next) => {
     user.isSubscribed = true;
     user.subscriptionExpiresAt = subscriptionExpiresAt;
     await user.save();
-    
+
     // Invalidate user cache after subscription update
     invalidateUserCache(userId);
 
@@ -201,7 +197,7 @@ export const verifyPayment = async (req, res, next) => {
       subscriptionExpiresAt: subscriptionExpiresAt
     });
     await payment.save();
-    
+
     // Log successful payment (without sensitive data)
     console.log(`Payment successful: Order ${razorpay_order_id}, User ${userId}, Amount ₹${order.amount / 100}`);
 

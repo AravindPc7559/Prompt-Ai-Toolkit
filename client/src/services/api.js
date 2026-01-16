@@ -30,7 +30,8 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       // Token expired or invalid, clear storage
       clearAuth();
-      window.location.href = '/login';
+      // Dispatch custom event for auth error
+      window.dispatchEvent(new CustomEvent('auth-error'));
     }
     return Promise.reject(error);
   }

@@ -30,6 +30,7 @@ const state = {
   grammarPopup: null,
   emailPopup: null,
   loginPopup: null,
+  userPopup: null,
   selectionTimeout: null,
   syncInterval: null,
   isProcessingRewrite: false,
@@ -38,7 +39,7 @@ const state = {
   authToken: null,
   isAuthenticated: false,
   extensionContextValid: true,
-  
+
   // Auth status cache
   authStatusCache: {
     status: null,
@@ -108,11 +109,11 @@ function normalizeUrl(url) {
  */
 function logError(context, error) {
   if (!error) return;
-  
-  const isContextError = error.message && 
-    (error.message.includes('Extension context invalidated') || 
-     error.message.includes('Extension context'));
-  
+
+  const isContextError = error.message &&
+    (error.message.includes('Extension context invalidated') ||
+      error.message.includes('Extension context'));
+
   if (!isContextError) {
     console.error(`[${context}]`, error);
   }
@@ -128,7 +129,7 @@ async function logNetworkError(error) {
 
   const lastLog = window.lastNetworkErrorLog || 0;
   const now = Date.now();
-  
+
   if (now - lastLog > CONFIG.NETWORK_ERROR_LOG_INTERVAL) {
     window.lastNetworkErrorLog = now;
     const serverUrl = await getServerUrl().catch(() => 'unknown');
@@ -170,7 +171,7 @@ async function getConfig() {
       error.contextInvalidated = true;
       throw error;
     }
-    
+
     // Return default config for other errors
     return {
       serverUrl: CONFIG.DEFAULT_SERVER_URL,
@@ -188,12 +189,12 @@ async function getServerUrl() {
   try {
     const config = await getConfig();
     const url = config.serverUrl || CONFIG.DEFAULT_SERVER_URL;
-    
+
     if (!url || typeof url !== 'string') {
       console.error('Invalid server URL:', url);
       return CONFIG.DEFAULT_SERVER_URL;
     }
-    
+
     return normalizeUrl(url);
   } catch (error) {
     logError('getServerUrl', error);
@@ -229,6 +230,20 @@ async function getLoginUrl() {
   }
 }
 
+/**
+ * Get dashboard URL
+ */
+async function getDashboardUrl() {
+  try {
+    const config = await getConfig();
+    const baseUrl = normalizeUrl(config.loginUrl);
+    return `${baseUrl}${config.dashboardPath}`;
+  } catch (error) {
+    logError('getDashboardUrl', error);
+    return `${CONFIG.DEFAULT_CLIENT_URL}/dashboard`;
+  }
+}
+
 // ============================================================================
 // AUTHENTICATION
 // ============================================================================
@@ -244,8 +259,8 @@ async function checkAuthStatus() {
 
     // Check cache first
     const now = Date.now();
-    if (state.authStatusCache.status && 
-        (now - state.authStatusCache.timestamp) < state.authStatusCache.ttl) {
+    if (state.authStatusCache.status &&
+      (now - state.authStatusCache.timestamp) < state.authStatusCache.ttl) {
       return state.authStatusCache.status;
     }
 
@@ -304,27 +319,27 @@ async function checkAuthStatus() {
         message: data.message || '',
         remainingTrials: data.remainingTrials || 0,
       };
-      
+
       // Cache the auth status
       state.authStatusCache.status = authStatus;
       state.authStatusCache.timestamp = Date.now();
-      
+
       return authStatus;
     } else {
       await deleteToken();
       state.authToken = null;
       state.isAuthenticated = false;
-      
+
       // Cache the negative result
       const authStatus = { authenticated: false, canUseService: false };
       state.authStatusCache.status = authStatus;
       state.authStatusCache.timestamp = Date.now();
-      
+
       return authStatus;
     }
   } catch (error) {
     await logNetworkError(error);
-    
+
     if (error && error.message && !error.message.includes('Failed to fetch') && !error.message.includes('NetworkError')) {
       logError('checkAuthStatus', error);
     }
@@ -345,7 +360,7 @@ async function deleteToken() {
     await safeChromeStorage((callback) => {
       chrome.storage.sync.remove(['authToken'], callback);
     });
-    
+
     // Clear auth status cache
     state.authStatusCache.status = null;
     state.authStatusCache.timestamp = 0;
@@ -427,7 +442,7 @@ async function syncTokenFromLocalStorage() {
             });
 
             console.log('Token synced from localStorage to extension storage');
-            
+
             // Update auth status
             checkAuthStatus().then((status) => {
               if (status.authenticated) {
@@ -573,7 +588,7 @@ async function handleAuthToken(event) {
         chrome.runtime.sendMessage({
           type: 'AUTH_TOKEN_SET',
           token: token,
-        }).catch(() => {});
+        }).catch(() => { });
       }
     } catch (e) {
       if (e.message && e.message.includes('Extension context invalidated')) {
@@ -613,7 +628,7 @@ async function handleLogout() {
       hideFloatingPopup();
 
       if (isExtensionContextValid()) {
-        chrome.runtime.sendMessage({ type: 'AUTH_TOKEN_REMOVED' }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'AUTH_TOKEN_REMOVED' }).catch(() => { });
       }
     } catch (e) {
       if (e.message && e.message.includes('Extension context invalidated')) {
@@ -674,7 +689,7 @@ async function checkSelection() {
       if (range && !range.collapsed && isSelectionInFormField(range)) {
         // Check authentication status
         let authStatus = { authenticated: false, canUseService: false };
-        
+
         try {
           authStatus = await checkAuthStatus();
 
@@ -718,7 +733,7 @@ async function checkSelection() {
     }
   } catch (error) {
     logError('checkSelection', error);
-    
+
     // Fallback to login button
     try {
       const selection = window.getSelection();
@@ -879,7 +894,7 @@ function isSelectionInFormField(range) {
       } catch (e) {
         // Ignore focus check errors
       }
-      
+
       checkElement = checkElement.parentElement;
     }
   } catch (e) {
@@ -970,7 +985,11 @@ function adjustPosition(left, top, width = CONFIG.ICON_SIZE, height = CONFIG.ICO
 function setupClickOutsideHandler(popup) {
   setTimeout(() => {
     const handleClick = (e) => {
-      if (popup && !popup.contains(e.target)) {
+      // Check if click is outside the popup and also outside userPopup if it exists
+      const isOutsidePopup = popup && !popup.contains(e.target);
+      const isOutsideUserPopup = !state.userPopup || !state.userPopup.contains(e.target);
+
+      if (isOutsidePopup && isOutsideUserPopup) {
         const sel = window.getSelection();
         if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < CONFIG.MIN_SELECTION_LENGTH) {
           hideFloatingPopup();
@@ -1015,6 +1034,9 @@ function showLoginButton(range, selectedText) {
     });
 
     setupClickOutsideHandler(state.loginPopup);
+
+    // Create user icon after lock icon (no need for separate handler, loginPopup handler covers it)
+    createUserIcon(adjusted.left + CONFIG.ICON_SIZE + CONFIG.ICON_GAP, adjusted.top, positionData, false);
   } catch (error) {
     logError('showLoginButton', error);
   }
@@ -1051,6 +1073,9 @@ function showPurchaseIcon(range, selectedText, message = 'Free trial exhausted. 
     });
 
     setupClickOutsideHandler(state.loginPopup);
+
+    // Create user icon after card icon (no need for separate handler, loginPopup handler covers it)
+    createUserIcon(adjusted.left + CONFIG.ICON_SIZE + CONFIG.ICON_GAP, adjusted.top, positionData, false);
   } catch (error) {
     logError('showPurchaseIcon', error);
   }
@@ -1111,6 +1136,9 @@ function showFloatingPopup(range, selectedText) {
     document.body.appendChild(state.grammarPopup);
     document.body.appendChild(state.emailPopup);
 
+    // Create user icon after the 3 feature icons
+    createUserIcon(left + (CONFIG.ICON_SIZE * 3) + (CONFIG.ICON_GAP * 3), top, positionData);
+
     // Add event listeners
     state.floatingPopup.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1132,7 +1160,8 @@ function showFloatingPopup(range, selectedText) {
       const handleClick = (e) => {
         if ((state.floatingPopup && !state.floatingPopup.contains(e.target)) &&
           (state.grammarPopup && !state.grammarPopup.contains(e.target)) &&
-          (state.emailPopup && !state.emailPopup.contains(e.target))) {
+          (state.emailPopup && !state.emailPopup.contains(e.target)) &&
+          (state.userPopup && !state.userPopup.contains(e.target))) {
           const sel = window.getSelection();
           if (!sel || sel.rangeCount === 0 || sel.toString().trim().length < CONFIG.MIN_SELECTION_LENGTH) {
             hideFloatingPopup();
@@ -1169,6 +1198,10 @@ function hideFloatingPopup() {
     state.loginPopup.remove();
     state.loginPopup = null;
   }
+  if (state.userPopup) {
+    state.userPopup.remove();
+    state.userPopup = null;
+  }
 }
 
 // ============================================================================
@@ -1187,7 +1220,7 @@ async function makeAuthenticatedRequest(endpoint, body) {
   }
 
   const serverUrl = await getServerUrl();
-  
+
   const response = await fetch(`${serverUrl}${endpoint}`, {
     method: 'POST',
     headers: {
@@ -1367,25 +1400,27 @@ function replaceSelectedText(range, originalText, rewrittenText, preserveFormatt
     range.deleteContents();
 
     if (preserveFormatting) {
-      const formattedText = rewrittenText.replace(/\n/g, '<br>');
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = formattedText;
+
+      const fragment = document.createDocumentFragment();
+      const lines = rewrittenText.split('\n');
+
+      lines.forEach((line, index) => {
+        if (index > 0) {
+          fragment.appendChild(document.createElement('br'));
+        }
+        fragment.appendChild(document.createTextNode(line));
+      });
 
       const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
         ? range.commonAncestorContainer.parentElement
         : range.commonAncestorContainer;
 
       if (parent && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true' || parent.isContentEditable)) {
-        const fragment = document.createDocumentFragment();
-        while (tempDiv.firstChild) {
-          fragment.appendChild(tempDiv.firstChild);
-        }
         range.insertNode(fragment);
       } else {
-        const textNode = document.createTextNode(rewrittenText);
         const span = document.createElement('span');
         span.style.whiteSpace = 'pre-line';
-        span.appendChild(textNode);
+        span.appendChild(fragment);
         range.insertNode(span);
       }
     } else {
@@ -1396,7 +1431,7 @@ function replaceSelectedText(range, originalText, rewrittenText, preserveFormatt
     window.getSelection().removeAllRanges();
   } catch (error) {
     logError('replaceSelectedText', error);
-    
+
     // Fallback replacement
     try {
       const parent = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
@@ -1407,15 +1442,39 @@ function replaceSelectedText(range, originalText, rewrittenText, preserveFormatt
         const text = parent.textContent || parent.innerText || '';
         if (text.includes(originalText)) {
           if (preserveFormatting && (parent.tagName === 'DIV' || parent.tagName === 'P' || parent.contentEditable === 'true')) {
-            const formattedText = rewrittenText.replace(/\n/g, '<br>');
-            parent.innerHTML = text.replace(originalText, formattedText);
+            // Safe replacement for block elements
+            const parts = text.split(originalText);
+            if (parts.length > 1) {
+              parent.textContent = ''; // Clear content
+              parts.forEach((part, index) => {
+                parent.appendChild(document.createTextNode(part));
+                if (index < parts.length - 1) {
+                  const lines = rewrittenText.split('\n');
+                  lines.forEach((line, lineIndex) => {
+                    if (lineIndex > 0) parent.appendChild(document.createElement('br'));
+                    parent.appendChild(document.createTextNode(line));
+                  });
+                }
+              });
+            }
           } else if (preserveFormatting) {
             const span = document.createElement('span');
             span.style.whiteSpace = 'pre-line';
             span.textContent = rewrittenText;
-            const textToReplace = parent.textContent || parent.innerText || '';
-            if (textToReplace.includes(originalText)) {
-              parent.innerHTML = textToReplace.replace(originalText, span.outerHTML);
+
+            // We can't easily safely replace a substring with an element in textContent
+            // So we'll fall back to text replacement if possible, or careful node manipulation
+            // For now, let's use a safer approach than innerHTML
+            const range = document.createRange();
+            const textNode = Array.from(parent.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.textContent.includes(originalText));
+
+            if (textNode) {
+              const start = textNode.textContent.indexOf(originalText);
+              const end = start + originalText.length;
+              range.setStart(textNode, start);
+              range.setEnd(textNode, end);
+              range.deleteContents();
+              range.insertNode(span);
             }
           } else {
             if (parent.textContent !== undefined) {
@@ -1491,6 +1550,54 @@ async function redirectToPricing() {
     window.open(pricingUrl, '_blank');
   } catch (error) {
     logError('redirectToPricing', error);
+  }
+}
+
+/**
+ * Redirect to dashboard page
+ */
+async function redirectToDashboard() {
+  try {
+    const dashboardUrl = await getDashboardUrl();
+    window.open(dashboardUrl, '_blank');
+  } catch (error) {
+    logError('redirectToDashboard', error);
+  }
+}
+
+/**
+ * Create and show user icon
+ * @param {number} left - Left position for the icon
+ * @param {number} top - Top position for the icon
+ * @param {Object} positionData - Position data for adjustment
+ * @param {boolean} setupHandler - Whether to setup click outside handler (default: true)
+ */
+function createUserIcon(left, top, positionData, setupHandler = true) {
+  // Remove existing user icon if any
+  if (state.userPopup) {
+    state.userPopup.remove();
+    state.userPopup = null;
+  }
+
+  // left parameter already includes the correct position, just adjust for boundaries
+  const adjusted = adjustPosition(left, top, CONFIG.ICON_SIZE, CONFIG.ICON_SIZE, positionData);
+
+  state.userPopup = document.createElement('button');
+  state.userPopup.id = 'prompt-user-popup';
+  state.userPopup.className = 'pr-icon-btn pr-user-btn';
+  state.userPopup.innerHTML = '<span class="pr-icon-emoji">👤</span><span class="pr-tooltip">Dashboard</span>';
+  state.userPopup.style.left = `${Math.round(adjusted.left)}px`;
+  state.userPopup.style.top = `${Math.round(adjusted.top)}px`;
+
+  document.body.appendChild(state.userPopup);
+
+  state.userPopup.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await redirectToDashboard();
+  });
+
+  if (setupHandler) {
+    setupClickOutsideHandler(state.userPopup);
   }
 }
 

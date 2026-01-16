@@ -23,14 +23,51 @@ body {
   color: white;
   padding: 20px;
   text-align: center;
+  position: relative;
+}
+
+.header-top {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  position: relative;
+  width: 100%;
 }
 
 .logo-img {
   height: 48px;
   width: auto;
-  margin-bottom: 12px;
   object-fit: contain;
   filter: brightness(0) invert(1);
+}
+
+.user-icon-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s;
+  padding: 0;
+  color: white;
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  font-size: 20px;
+  line-height: 1;
+  z-index: 10;
+}
+
+.user-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.5);
+  transform: scale(1.1);
 }
 
 .header h1 {
