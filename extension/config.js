@@ -1,7 +1,7 @@
-/**
- * Extension Configuration
- */
+
 export const CONFIG = {
-    API_URL: 'http://localhost:3000',
-    LOGIN_URL: 'http://localhost:5173',
+    serverUrl: 'https://aiprompttoolkitbackend-vi1bvpjw.b4a.run',
+    loginUrl: 'http://localhost:5173',
+    pricingPath: '/pricing',
+    dashboardPath: '/dashboard'
 };
