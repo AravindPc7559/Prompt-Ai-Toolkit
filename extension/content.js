@@ -1032,6 +1032,10 @@ function showLoginButton(range, selectedText) {
       e.stopPropagation();
       await redirectToLogin();
     });
+    state.loginPopup.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
 
     setupClickOutsideHandler(state.loginPopup);
 
@@ -1070,6 +1074,10 @@ function showPurchaseIcon(range, selectedText, message = 'Free trial exhausted. 
     state.loginPopup.addEventListener('click', async (e) => {
       e.stopPropagation();
       await redirectToPricing();
+    });
+    state.loginPopup.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
     });
 
     setupClickOutsideHandler(state.loginPopup);
@@ -1144,15 +1152,27 @@ function showFloatingPopup(range, selectedText) {
       e.stopPropagation();
       rewriteSelectedText(selectedText, range);
     });
+    state.floatingPopup.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
 
     state.grammarPopup.addEventListener('click', (e) => {
       e.stopPropagation();
       grammarizeSelectedText(selectedText, range);
     });
+    state.grammarPopup.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
 
     state.emailPopup.addEventListener('click', (e) => {
       e.stopPropagation();
       formatEmailSelectedText(selectedText, range);
+    });
+    state.emailPopup.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
     });
 
     // Setup click outside handler
@@ -1594,6 +1614,10 @@ function createUserIcon(left, top, positionData, setupHandler = true) {
   state.userPopup.addEventListener('click', async (e) => {
     e.stopPropagation();
     await redirectToDashboard();
+  });
+  state.userPopup.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
   });
 
   if (setupHandler) {

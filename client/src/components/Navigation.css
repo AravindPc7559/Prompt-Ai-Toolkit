@@ -12,6 +12,25 @@
   flex-wrap: nowrap;
 }
 
+/* Beta Badge */
+.beta-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-left: 8px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 4px rgba(118, 75, 162, 0.3);
+  -webkit-text-fill-color: white;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+}
+
 .nav-brand {
   display: flex;
   align-items: center;

@@ -1,6 +1,4 @@
-// Background service worker for the extension
-
-import { CONFIG } from './config.js';
+import { DEFAULT_CONFIG } from './config/config.js';
 
 // Listen for extension installation
 chrome.runtime.onInstalled.addListener((details) => {
@@ -8,8 +6,8 @@ chrome.runtime.onInstalled.addListener((details) => {
     console.log('Prompt AI Toolkit extension installed');
     // Set default server URL and auth config
     chrome.storage.sync.set({
-      serverUrl: CONFIG.API_URL,
-      loginUrl: CONFIG.LOGIN_URL
+      serverUrl: DEFAULT_CONFIG.serverUrl,
+      loginUrl: DEFAULT_CONFIG.loginUrl
     });
   }
 });
